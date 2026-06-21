@@ -157,3 +157,12 @@ dotnet run --project MasterNode
 dotnet run --project srv_sub
 dotnet run --project srv_pub
 ```
+
+## Live pipeline
+
+![KafkaFlowShardApp live logs](assets/terminal.png)
+
+Interleaved output of `docker compose logs -f srv_pub srv_sub masternode`: the five
+`srv_sub` replicas (`srv_sub-1..5`) each forward packets and get `MasterNode response: Ok`,
+while `masternode` routes them to the protocol shards — `[shard:Other] saved DNS …`,
+`[shard:Arp] saved ARP …`, etc.
