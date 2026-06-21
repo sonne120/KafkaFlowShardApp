@@ -62,10 +62,15 @@ public sealed class TcpForwarder : IDisposable
         return !response.Contains("Invalid API Key");
     }
 
-    public async Task<bool> SendAsync(string payload, CancellationToken cancellationToken)
+    /// <summary>
+    /// true  = MasterNode replied "Ok" (saved);
+    /// false = MasterNode replied but rejected the packet (counts as a failed attempt);
+    /// null  = could not deliver / transient infra error (do NOT count as an attempt).
+    /// </summary>
+    public async Task<bool?> SendAsync(string payload, CancellationToken cancellationToken)
     {
         if (!await EnsureConnectedAsync(cancellationToken))
-            return false;
+            return null;
 
         try
         {
@@ -80,7 +85,7 @@ public sealed class TcpForwarder : IDisposable
         {
             _logger.LogWarning(ex, "TCP send failed; dropping connection for reconnect on next message.");
             Disconnect();
-            return false;
+            return null;
         }
     }
 

@@ -6,14 +6,28 @@ into 5 sharded MongoDB nodes: **MySQL outbox → Kafka → MasterNode → MongoD
 ## Data flow
 
 ```
-                       ┌─────────────────────────── 5 MongoDB shards ──────────────────────────┐
-                       │  HTTPS:27018  TCP:27019  UDP:27020  ARP:27021  OTHER:27022             │
-                       └───────────────────────────────▲──────────────────────────────────────┘
-                                                        │ insert
- srv_pub ──▶ MySQL Outbox ──▶ Relay ──▶ Kafka ──▶ srv_sub ──▶ MasterNode
-  generate    (tx insert)     (poll +   Snapshot   (consume)    (auth · filter by proto · route)
-  packets                     publish)   Topic         │                  │
-                                                       └──── "Ok" = commit offset ◀── "Ok" = saved
+  ┌─────────────┐  tx insert  ┌─────────────┐   relay      ┌──────────────────┐
+  │   srv_pub   │ ──────────▶ │ MySQL Outbox│  publish     │      Kafka       │
+  │     × 3     │             │  (durable Q)│ ───────────▶ │  SnapshotTopic   │
+  │  generate   │   poll  ◀── │   table     │              │  (5 partitions)  │
+  └─────────────┘             └─────────────┘              └────────┬─────────┘
+                                                                    │ consume
+                                                                    ▼
+                                                          ┌──────────────────┐
+                  ┌─────────── "Ok" → commit offset ──────│    srv_sub × 5   │
+                  │                                        │  (1 per partition)│
+                  ▼                                        └────────┬─────────┘
+        ┌───────────────────┐         forward payload (TCP)         │
+        │     MasterNode    │ ◀────────────────────────────────────┘
+        │  auth · filter    │
+        │  proto · route    │──┐ rejected ✗ → retry ×3 → ┌────────────┐
+        └─────────┬─────────┘  └────────────────────────▶│ deadletter │
+                  │ insert (proto-routed)                 └────────────┘
+                  ▼
+  ┌──────────────────────────── 5 MongoDB shards ───────────────────────────┐
+  │   HTTPS        TCP         UDP         ARP         OTHER (DNS / ICMP…)    │
+  │  :27018      :27019      :27020      :27021       :27022                  │
+  └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 1. **srv_pub** generates randomized test packets and, instead of publishing directly,
@@ -65,6 +79,50 @@ All shards store into database `pcap`, collection `packets`.
 - `srv_pub` runs `IOutboxInitializer.InitializeAsync` on startup (with retry) to create
   the table + procedure.
 
+## Scaling
+
+`srv_pub` and `srv_sub` run as multiple replicas (set in `docker-compose.yml` via
+`deploy.replicas`): **3× srv_pub** and **5× srv_sub** by default.
+
+- **srv_pub ×3** — all producers write to the same MySQL outbox; the relay reserves rows
+  with `FOR UPDATE SKIP LOCKED`, so the 3 instances never double-publish.
+- **srv_sub ×5** — Kafka gives **one consumer per partition per group**, so the topic is
+  created with **5 partitions** (`TopicPartitions`, set in `kafka/TopicRepository.cs`) and
+  each of the 5 consumers gets its own partition.
+
+```bash
+docker compose up -d --build            # replicas come from deploy.replicas
+docker compose ps                       # srv_pub-1..3, srv_sub-1..5
+# proof all 5 consumers are active (5 partitions across 5 CONSUMER-IDs, lag ~0):
+docker exec kafkaflowshard-kafka kafka-consumer-groups \
+  --bootstrap-server localhost:9092 --describe --group ConsumerGroup
+```
+
+## Retries & dead-letter
+
+`srv_sub` creates the `5sdelay` (retry) and `deadletter` topics **in code** at startup
+(`DeadLetterProducer.EnsureTopicsAsync`, same as the main topic). Each consumed message
+resolves to one of three outcomes:
+
+| MasterNode result | Action |
+|---|---|
+| replies `Ok` | commit ✓ |
+| replies but **rejects** (e.g. shard write failed, malformed payload) | count an attempt → re-queue to `SnapshotTopic` (attempt header `+1`), or `deadletter` once the limit is hit; then commit |
+| **unreachable** (TCP can't connect) | rewind offset + wait 2s, retry — **not** counted as an attempt |
+
+- Attempt count travels in a Kafka header (`attempts`); the dead-lettered copy also carries
+  `x-failure-reason`.
+- Limit is `MaxAttempts` (default **3**) — a poison message is tried 3× then dead-lettered.
+- Transient outages don't burn attempts, so a MasterNode restart won't dump good packets.
+
+```bash
+docker exec kafkaflowshard-kafka kafka-topics --bootstrap-server localhost:9092 --list
+# force rejections to see it fill: stop a shard so its writes fail
+docker compose stop mongo-arp
+docker exec -it kafkaflowshard-kafka kafka-console-consumer \
+  --bootstrap-server localhost:9092 --topic deadletter --from-beginning
+```
+
 ## Run it
 
 ### Option A — everything in Docker (recommended)
@@ -107,8 +165,10 @@ variables (double-underscore for nesting, e.g. `Shards__Https`).
 |---------|---------|---------|
 | `KafkaServer` | srv_pub, srv_sub | `localhost:9092` |
 | `SqlConnStr` | srv_pub (outbox) | `server=localhost;port=3306;database=outbox;user=root;password=root` |
-| `RetryTopic` / `DeadletterTopic` | srv_pub (kafka) | `5sdelay` / `deadletter` |
 | `Topic` | srv_pub, srv_sub | `SnapshotTopic` |
+| `RetryTopic` / `DeadletterTopic` | srv_pub, srv_sub | `5sdelay` / `deadletter` |
+| `TopicPartitions` | srv_pub, srv_sub | `5` |
+| `MaxAttempts` | srv_sub | `3` |
 | `ConsumerGroup` | srv_sub | `ConsumerGroup` |
 | `MasterNode__Host` / `MasterNode__Port` | srv_sub | `localhost` / `8000` |
 | `Tcp__Port` | MasterNode | `8000` |

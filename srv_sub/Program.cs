@@ -7,6 +7,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddSingleton<ISerializer, Serializer>();
 builder.Services.AddSingleton<TcpForwarder>();
+builder.Services.AddSingleton<DeadLetterProducer>();
 builder.Services.AddHostedService<KafkaConsumerRx>();
 
 var host = builder.Build();

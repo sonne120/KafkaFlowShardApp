@@ -11,8 +11,10 @@ public sealed class KafkaConsumerRx : BackgroundService
 {
     private readonly int _maxConsumeBatchSize = 100;
     private readonly string _topic;
+    private readonly int _maxAttempts;
     private readonly ISerializer _serializer;
     private readonly TcpForwarder _forwarder;
+    private readonly DeadLetterProducer _deadLetter;
     private readonly ILogger<KafkaConsumerRx> _logger;
     private readonly IConsumer<string, string> _consumer;
 
@@ -20,11 +22,14 @@ public sealed class KafkaConsumerRx : BackgroundService
         IConfiguration configuration,
         ILogger<KafkaConsumerRx> logger,
         ISerializer serializer,
-        TcpForwarder forwarder)
+        TcpForwarder forwarder,
+        DeadLetterProducer deadLetter)
     {
         _topic = configuration["Topic"] ?? "SnapshotTopic";
+        _maxAttempts = int.TryParse(configuration["MaxAttempts"], out var m) ? m : 3;
         _serializer = serializer;
         _forwarder = forwarder;
+        _deadLetter = deadLetter;
         _logger = logger;
 
         var consumerConfig = new ConsumerConfig
@@ -40,6 +45,7 @@ public sealed class KafkaConsumerRx : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _deadLetter.EnsureTopicsAsync();
         await _forwarder.EnsureConnectedAsync(stoppingToken);
 
         StartKafkaObservable(stoppingToken).Subscribe(
@@ -70,12 +76,26 @@ public sealed class KafkaConsumerRx : BackgroundService
 
                             foreach (var result in batch)
                             {
-                                var processed = await ProcessMessage(result, stoppingToken);
+                                var verdict = await ProcessMessage(result, stoppingToken);
 
-                                if (processed)
+                                if (verdict == true)
                                 {
                                     _consumer.Commit(result);
                                     observer.OnNext(result);
+                                }
+                                else if (verdict == null)
+                                {
+                                    // rewind to this offset and retry after a short pause.
+                                    _logger.LogWarning("MasterNode unreachable; retrying offset {Offset}", result.TopicPartitionOffset);
+                                    _consumer.Seek(result.TopicPartitionOffset);
+                                    await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
+                                    break;
+                                }
+                                else
+                                {
+                                    // Rejected by MasterNode: count the attempt, retry or dead-letter.
+                                    await RouteFailureAsync(result);
+                                    _consumer.Commit(result);
                                 }
                             }
                         }
@@ -107,31 +127,54 @@ public sealed class KafkaConsumerRx : BackgroundService
         });
     }
 
-    private async Task<bool> ProcessMessage(ConsumeResult<string, string> result, CancellationToken stoppingToken)
+    // true  = handled (commit); false = rejected/poison (count attempt -> retry or dead-letter);
+    // null  = MasterNode unreachable (don't commit, retry after short delay)
+    private async Task<bool?> ProcessMessage(ConsumeResult<string, string> result, CancellationToken stoppingToken)
     {
+        PacketMessage envelope;
         try
         {
-            var envelope = _serializer.Deserialize<PacketMessage>(result.Message.Value);
-
-            if (string.IsNullOrWhiteSpace(envelope.Payload))
-            {
-                _logger.LogWarning("Received message with empty Payload. Skipping (will commit).");
-                return true;
-            }
-
-            _logger.LogInformation("Forwarding {Proto} packet to MasterNode", envelope.PayloadType);
-            return await _forwarder.SendAsync(envelope.Payload, stoppingToken);
+            envelope = _serializer.Deserialize<PacketMessage>(result.Message.Value);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing message");
+            _logger.LogError(ex, "Malformed message; routing to dead-letter");
             return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(envelope.Payload))
+        {
+            _logger.LogWarning("Received message with empty Payload. Skipping (will commit).");
+            return true;
+        }
+
+        _logger.LogInformation("Forwarding {Proto} packet to MasterNode", envelope.PayloadType);
+        return await _forwarder.SendAsync(envelope.Payload, stoppingToken);
+    }
+
+
+    private async Task RouteFailureAsync(ConsumeResult<string, string> result)
+    {
+        var attempts = DeadLetterProducer.GetAttempts(result) + 1;
+        var key = result.Message.Key;
+        var value = result.Message.Value;
+
+        if (attempts >= _maxAttempts)
+        {
+            await _deadLetter.ProduceAsync(_deadLetter.DeadLetterTopic, key, value, attempts, "max attempts exceeded");
+            _logger.LogWarning("Dead-lettered after {Attempts} attempt(s) -> {Topic}", attempts, _deadLetter.DeadLetterTopic);
+        }
+        else
+        {
+            await _deadLetter.ProduceAsync(_topic, key, value, attempts);
+            _logger.LogWarning("Rejected; retry {Attempts}/{Max} re-queued -> {Topic}", attempts, _maxAttempts, _topic);
         }
     }
 
     public override void Dispose()
     {
         _forwarder.Dispose();
+        _deadLetter.Dispose();
         _consumer.Dispose();
         base.Dispose();
     }

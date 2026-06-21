@@ -27,9 +27,8 @@ services:
 
   # ---------- MySQL (Outbox Pattern store for srv_pub) ----------
   mysql:
-    image: mysql:8
+    image: mysql:8.0
     container_name: kafkaflowshard-mysql
-    command: --default-authentication-plugin=mysql_native_password
     ports:
       - "3306:3306"
     environment:
@@ -37,6 +36,12 @@ services:
       MYSQL_DATABASE: outbox
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   # 5 MongoDB shard nodes (one per main package type)
   mongo-https:
@@ -86,27 +91,37 @@ services:
       Shards__Arp: "mongodb://mongo-arp:27017"
       Shards__Other: "mongodb://mongo-other:27017"
 
-  # srv_sub: Kafka consumer -> TCP -> commit on Ok
+  # srv_sub: Kafka consumer -> TCP -> commit on Ok (5 replicas, one per partition)
   srv_sub:
     build:
       context: .
       dockerfile: srv_sub/Dockerfile
-    container_name: kafkaflowshard-srv-sub
+    deploy:
+      replicas: 5
     depends_on: [ kafka, masternode ]
     environment:
       KafkaServer: "kafka:9093"
       Topic: "SnapshotTopic"
+      RetryTopic: "5sdelay"
+      DeadletterTopic: "deadletter"
+      TopicPartitions: "5"
+      MaxAttempts: "3"
       ConsumerGroup: "ConsumerGroup"
       MasterNode__Host: "masternode"
       MasterNode__Port: "8000"
 
-  # srv_pub: generate test packets -> MySQL outbox -> relay -> Kafka
+  # srv_pub: generate test packets -> MySQL outbox -> relay -> Kafka (3 replicas)
   srv_pub:
     build:
       context: .
       dockerfile: srv_pub/Dockerfile
-    container_name: kafkaflowshard-srv-pub
-    depends_on: [ kafka, mysql ]
+    deploy:
+      replicas: 3
+    depends_on:
+      kafka:
+        condition: service_started
+      mysql:
+        condition: service_healthy
     environment:
       KafkaServer: "kafka:9093"
       SqlConnStr: "server=mysql;port=3306;database=outbox;user=root;password=root"

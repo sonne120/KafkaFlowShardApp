@@ -23,6 +23,8 @@ public class TopicRepository : ITopicRepository
             BootstrapServers = _configuration["KafkaServer"]
         };
 
+        var partitions = int.TryParse(_configuration["TopicPartitions"], out var p) ? p : 5;
+
         using var adminClient = new AdminClientBuilder(adminConfig).Build();
         try
         {
@@ -32,7 +34,7 @@ public class TopicRepository : ITopicRepository
                 {
                     Name = topicName,
                     ReplicationFactor = 1,
-                    NumPartitions = 1
+                    NumPartitions = partitions
                 }
             });
         }
