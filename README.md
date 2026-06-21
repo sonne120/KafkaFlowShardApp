@@ -1,12 +1,7 @@
 # KafkaFlowShardApp
 
-A small, self-contained slice of the `pcap_app` system that demonstrates the core
-**Kafka → MasterNode → sharded MongoDB** pipeline, distilled out of the original
-`srv_pub` / `srv_sub` / `MasterNode` projects.
-
-Trimmed down from the original app: **no LoadBalancer, no SSL/TLS, no DataHub, no gRPC.**
-The producer keeps the **Transactional Outbox Pattern** (MySQL) ported from the original
-`outbox` / `kafka` projects, so synthetic test data is written durably before it reaches Kafka.
+Microservice pipeline that generates test network packets and routes them by protocol
+into 5 sharded MongoDB nodes: **MySQL outbox → Kafka → MasterNode → MongoDB shards**.
 
 ## Data flow
 
