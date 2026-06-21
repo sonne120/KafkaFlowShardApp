@@ -23,8 +23,7 @@ into 5 sharded MongoDB nodes: **MySQL outbox → Kafka → MasterNode → MongoD
    This removes the dual-write problem: nothing is lost if Kafka is down.
 2. **srv_sub** consumes the topic and forwards each packet's payload over a **TCP**
    connection to the MasterNode. It commits the Kafka offset **only** when the
-   MasterNode replies `"Ok"` — the exact `processed → _consumer.Commit()` pattern
-   from the original app:
+   MasterNode replies `"Ok"` — the `processed → _consumer.Commit()` pattern:
    ```csharp
    var processed = await _forwarder.SendAsync(envelope.Payload, stoppingToken);
    if (processed) _consumer.Commit(result);
@@ -51,22 +50,17 @@ All shards store into database `pcap`, collection `packets`.
 | Project       | Type            | Role |
 |---------------|-----------------|------|
 | `Shared`      | class library   | `PacketMessage`, `SnapshotMessage`, `ProtocolType`, serializer, API-key hasher |
-| `kafka`       | class library   | `KafkaMessagePub`, `TopicRepository`, `Message` (ported producer) |
-| `outbox`      | class library   | Outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence (ported) |
+| `kafka`       | class library   | `KafkaMessagePub`, `TopicRepository`, `Message` (Kafka producer) |
+| `outbox`      | class library   | Outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence |
 | `srv_pub`     | worker          | Generates test packets → writes to MySQL outbox; relay publishes to Kafka |
 | `srv_sub`     | worker          | Consumes Kafka, forwards over TCP, commits on `"Ok"` |
 | `MasterNode`  | console (Akka)  | TCP server: auth → filter → route to 5 shards → insert → reply |
 
-### Outbox notes (MySQL adaptations from the original)
+### Outbox notes
 
-The `outbox` / `kafka` code is ported as-is, with the minimum changes needed to actually
-run on MySQL (the original mixed a SQL Server provider with MySQL SQL):
-
-- EF provider switched to **Pomelo MySQL**; `IsolationLevel.Snapshot` → `RepeatableRead`.
-- SQL `dbo.` schema prefixes removed; outbox `Id` typed `CHAR(36)` (was `INT`).
-- The reservation **stored procedure is now actually created** on startup (the original
-  embedded it but never ran it), and renamed `GetDataFromTempTable` (the original
-  ``dbo.GetDataFromTempTable`` name makes MySQL read `dbo` as a database on `CALL`).
+- EF provider is **Pomelo MySQL**; the outbox transaction uses `RepeatableRead` isolation.
+- Outbox `Id` is `CHAR(36)` (a `UUID()`).
+- The reservation **stored procedure** `GetDataFromTempTable` is created on startup.
 - `srv_pub` runs `IOutboxInitializer.InitializeAsync` on startup (with retry) to create
   the table + procedure.
 
