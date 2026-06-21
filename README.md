@@ -6,13 +6,14 @@ into 5 sharded MongoDB nodes: **MySQL outbox → Kafka → MasterNode → MongoD
 ## Data flow
 
 ```
- srv_pub                       MySQL          relay          Kafka          srv_sub             MasterNode            5 MongoDB ShardNodes
-┌─────────┐  tx insert   ┌────────────┐  poll ┌───────┐pub ┌────────┐cons ┌──────────┐  TCP  ┌─────────────┐ filter ┌──────────────────┐
-│ generate │───────────▶ │ Outbox tbl │ ────▶ │ Relay │──▶ │Snapshot│───▶ │ ConsumerRx│─────▶│ auth + route │──────▶ │ shard by protocol │
-│ packets  │  (atomic)   └────────────┘ mark  └───────┘    │ Topic  │     └──────────┘payload│ by protocol  │ insert │ HTTPS/TCP/UDP/    │
-└─────────┘                processed                       └────────┘          ▲   │        └─────────────┘        │ ARP/OTHER         │
-                                                                               │   │ "Ok"          │ "Ok" once saved└──────────────────┘
-                                                                               └───┘ commit offset ◀┘
+                       ┌─────────────────────────── 5 MongoDB shards ──────────────────────────┐
+                       │  HTTPS:27018  TCP:27019  UDP:27020  ARP:27021  OTHER:27022             │
+                       └───────────────────────────────▲──────────────────────────────────────┘
+                                                        │ insert
+ srv_pub ──▶ MySQL Outbox ──▶ Relay ──▶ Kafka ──▶ srv_sub ──▶ MasterNode
+  generate    (tx insert)     (poll +   Snapshot   (consume)    (auth · filter by proto · route)
+  packets                     publish)   Topic         │                  │
+                                                       └──── "Ok" = commit offset ◀── "Ok" = saved
 ```
 
 1. **srv_pub** generates randomized test packets and, instead of publishing directly,
