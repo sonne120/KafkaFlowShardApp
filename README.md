@@ -150,6 +150,8 @@ cd KafkaFlowShardApp
 # Start only Kafka + MySQL + the 5 Mongo shards
 docker compose up -d zookeeper kafka mysql mongo-https mongo-tcp mongo-udp mongo-arp mongo-other
 
+docker compose logs -f srv_pub srv_sub masternode
+
 # In separate terminals (defaults already point at localhost):
 dotnet run --project MasterNode
 dotnet run --project srv_sub
