@@ -155,23 +155,3 @@ dotnet run --project MasterNode
 dotnet run --project srv_sub
 dotnet run --project srv_pub
 ```
-
-## Configuration
-
-All settings are in each project's `appsettings.json` and overridable via environment
-variables (double-underscore for nesting, e.g. `Shards__Https`).
-
-| Setting | Used by | Default |
-|---------|---------|---------|
-| `KafkaServer` | srv_pub, srv_sub | `localhost:9092` |
-| `SqlConnStr` | srv_pub (outbox) | `server=localhost;port=3306;database=outbox;user=root;password=root` |
-| `Topic` | srv_pub, srv_sub | `SnapshotTopic` |
-| `RetryTopic` / `DeadletterTopic` | srv_pub, srv_sub | `5sdelay` / `deadletter` |
-| `TopicPartitions` | srv_pub, srv_sub | `5` |
-| `MaxAttempts` | srv_sub | `3` |
-| `ConsumerGroup` | srv_sub | `ConsumerGroup` |
-| `MasterNode__Host` / `MasterNode__Port` | srv_sub | `localhost` / `8000` |
-| `Tcp__Port` | MasterNode | `8000` |
-| `ApiKeys` | MasterNode | `valid_api_key_1`, `valid_api_key_2` |
-| `Shards__{Https,Tcp,Udp,Arp,Other}` | MasterNode | `mongodb://localhost:2701{8..22}` |
-| `Publisher__BatchSize` / `Publisher__IntervalMs` | srv_pub | `5` / `2000` |
