@@ -1,0 +1,125 @@
+name: kafkaflowshard
+
+services:
+  # ---------- Kafka ----------
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: kafkaflowshard-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafkaflowshard-kafka
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  # ---------- MySQL (Outbox Pattern store for srv_pub) ----------
+  mysql:
+    image: mysql:8
+    container_name: kafkaflowshard-mysql
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: outbox
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  # 5 MongoDB shard nodes (one per main package type)
+  mongo-https:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-https
+    ports: [ "27018:27017" ]
+    volumes: [ "mongo_https:/data/db" ]
+
+  mongo-tcp:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-tcp
+    ports: [ "27019:27017" ]
+    volumes: [ "mongo_tcp:/data/db" ]
+
+  mongo-udp:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-udp
+    ports: [ "27020:27017" ]
+    volumes: [ "mongo_udp:/data/db" ]
+
+  mongo-arp:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-arp
+    ports: [ "27021:27017" ]
+    volumes: [ "mongo_arp:/data/db" ]
+
+  mongo-other:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-other
+    ports: [ "27022:27017" ]
+    volumes: [ "mongo_other:/data/db" ]
+
+  # MasterNode: TCP server, filter + route to shards 
+  masternode:
+    build:
+      context: .
+      dockerfile: MasterNode/Dockerfile
+    container_name: kafkaflowshard-masternode
+    depends_on: [ mongo-https, mongo-tcp, mongo-udp, mongo-arp, mongo-other ]
+    ports:
+      - "8000:8000"
+    environment:
+      Tcp__Port: "8000"
+      Shards__Https: "mongodb://mongo-https:27017"
+      Shards__Tcp: "mongodb://mongo-tcp:27017"
+      Shards__Udp: "mongodb://mongo-udp:27017"
+      Shards__Arp: "mongodb://mongo-arp:27017"
+      Shards__Other: "mongodb://mongo-other:27017"
+
+  # srv_sub: Kafka consumer -> TCP -> commit on Ok
+  srv_sub:
+    build:
+      context: .
+      dockerfile: srv_sub/Dockerfile
+    container_name: kafkaflowshard-srv-sub
+    depends_on: [ kafka, masternode ]
+    environment:
+      KafkaServer: "kafka:9093"
+      Topic: "SnapshotTopic"
+      ConsumerGroup: "ConsumerGroup"
+      MasterNode__Host: "masternode"
+      MasterNode__Port: "8000"
+
+  # srv_pub: generate test packets -> MySQL outbox -> relay -> Kafka
+  srv_pub:
+    build:
+      context: .
+      dockerfile: srv_pub/Dockerfile
+    container_name: kafkaflowshard-srv-pub
+    depends_on: [ kafka, mysql ]
+    environment:
+      KafkaServer: "kafka:9093"
+      SqlConnStr: "server=mysql;port=3306;database=outbox;user=root;password=root"
+      Topic: "SnapshotTopic"
+      RetryTopic: "5sdelay"
+      DeadletterTopic: "deadletter"
+      Publisher__BatchSize: "5"
+      Publisher__IntervalMs: "2000"
+
+volumes:
+  mysql_data:
+  mongo_https:
+  mongo_tcp:
+  mongo_udp:
+  mongo_arp:
+  mongo_other:

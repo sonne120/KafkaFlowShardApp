@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>KafkaFlowShardApp.Pub</RootNamespace>
+    <UserSecretsId>kafkaflowshard-srv-pub</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Shared.csproj" />
+    <ProjectReference Include="..\kafka\kafka.csproj" />
+    <ProjectReference Include="..\outbox\outbox.csproj" />
+  </ItemGroup>
+
+</Project>
