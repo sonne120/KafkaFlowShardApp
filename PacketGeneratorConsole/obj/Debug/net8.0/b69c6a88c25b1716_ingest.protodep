@@ -1,0 +1,2 @@
+obj/Debug/net8.0/Ingest.cs \
+obj/Debug/net8.0/IngestGrpc.cs: ../protos/ingest.proto

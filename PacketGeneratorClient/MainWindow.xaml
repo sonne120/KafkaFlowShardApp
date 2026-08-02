@@ -1,0 +1,39 @@
+<Window x:Class="KafkaFlowShardApp.PacketGeneratorClient.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Packet Generator (gRPC → LoadBalancer)" Height="520" Width="720">
+    <DockPanel Margin="10">
+        <!-- Connection / options -->
+        <GroupBox DockPanel.Dock="Top" Header="Target" Padding="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="LoadBalancer URL:" VerticalAlignment="Center" Margin="0,0,8,4"/>
+                <TextBox  Grid.Row="0" Grid.Column="1" x:Name="UrlBox" Text="http://localhost:5001" Margin="0,0,8,4"/>
+                <CheckBox Grid.Row="0" Grid.Column="2" x:Name="SslCheck" Content="Use SSL/TLS" IsChecked="False" VerticalAlignment="Center"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Packets to send:" VerticalAlignment="Center" Margin="0,4,8,0"/>
+                <TextBox  Grid.Row="1" Grid.Column="1" x:Name="CountBox" Text="50" HorizontalAlignment="Left" Width="100" Margin="0,4,0,0"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Actions -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,8,0,8">
+            <Button x:Name="SendButton" Content="Send packets" Width="130" Click="SendButton_Click"/>
+            <TextBlock x:Name="StatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
+        </StackPanel>
+
+        <!-- Log -->
+        <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                 TextWrapping="NoWrap"/>
+    </DockPanel>
+</Window>

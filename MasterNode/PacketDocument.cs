@@ -11,6 +11,11 @@ public sealed class PacketDocument
     [BsonElement("packetId")]
     public string PacketId { get; set; } = Guid.NewGuid().ToString();
 
+    // CDC / read-model keys — Debezium ships these to the read side.
+    public string transaction_id { get; set; } = Guid.NewGuid().ToString();
+    public string client_id { get; set; } = string.Empty;
+    public long version { get; set; }
+
     public int source_port { get; set; }
     public int dest_port { get; set; }
     public string source_ip { get; set; } = string.Empty;

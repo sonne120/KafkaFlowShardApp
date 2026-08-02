@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>KafkaFlowShardApp.Ingest</RootNamespace>
+    <UserSecretsId>kafkaflowshard-srv-ingest</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore" Version="2.66.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="..\protos\ingest.proto" GrpcServices="Server" Link="Protos\ingest.proto" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shared\Shared.csproj" />
+    <ProjectReference Include="..\kafka\kafka.csproj" />
+    <ProjectReference Include="..\outbox\outbox.csproj" />
+  </ItemGroup>
+
+</Project>

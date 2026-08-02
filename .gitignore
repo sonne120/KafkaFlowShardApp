@@ -1,0 +1,13 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+
+# .NET / Rider / VS user files
+*.user
+*.suo
+.vs/
+.idea/
+
+# OS
+.DS_Store

@@ -4,7 +4,12 @@ namespace KafkaFlowShardApp.Outbox;
 
 public static class ServiceExtensions
 {
-    public static IServiceCollection AddOutbox(this IServiceCollection services)
+    /// <param name="runRelayJobs">
+    /// When true (default) this service also runs the publish + cleanup background jobs that
+    /// drain the outbox to Kafka. Set false for write-only producers (e.g. srv_ingest) so the
+    /// relay stays owned by a single service (srv_pub).
+    /// </param>
+    public static IServiceCollection AddOutbox(this IServiceCollection services, bool runRelayJobs = true)
     {
         services.AddSingleton<ISerializer, Serializer>();
 
@@ -13,8 +18,11 @@ public static class ServiceExtensions
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IOutboxInitializer, OutboxInitializer>();
 
-        services.AddHostedService<PublishOutboxJob>();
-        services.AddHostedService<CleanupOutboxJob>();
+        if (runRelayJobs)
+        {
+            services.AddHostedService<PublishOutboxJob>();
+            services.AddHostedService<CleanupOutboxJob>();
+        }
 
         return services;
     }

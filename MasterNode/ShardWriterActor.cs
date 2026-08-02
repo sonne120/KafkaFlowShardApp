@@ -26,6 +26,13 @@ public sealed class ShardWriterActor : ReceiveActor
 
                 var document = new PacketDocument
                 {
+                    transaction_id = string.IsNullOrWhiteSpace(snapshot.transaction_id)
+                        ? Guid.NewGuid().ToString()
+                        : snapshot.transaction_id,
+                    client_id = string.IsNullOrWhiteSpace(snapshot.client_id)
+                        ? snapshot.source_ip
+                        : snapshot.client_id,
+                    version = snapshot.version,
                     source_port = snapshot.source_port,
                     dest_port = snapshot.dest_port,
                     source_ip = snapshot.source_ip,

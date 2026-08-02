@@ -1,7 +1,7 @@
 name: kafkaflowshard
 
 services:
-  # ---------- Kafka ----------
+  # Kafka 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: kafkaflowshard-zookeeper
@@ -14,18 +14,20 @@ services:
     container_name: kafkaflowshard-kafka
     depends_on: [zookeeper]
     ports:
-      - "9092:9092"
+      # Host publish moved 9092 -> 9192 to avoid colliding with other local Kafka projects.
+      # Internal services use kafka:9093, so this only affects host-side Kafka tooling.
+      - "9192:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093,EXTERNAL://localhost:9192
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 
-  # ---------- MySQL (Outbox Pattern store for srv_pub) ----------
+  # MySQL (Outbox Pattern store for srv_pub)
   mysql:
     image: mysql:8.0
     container_name: kafkaflowshard-mysql
@@ -43,36 +45,139 @@ services:
       retries: 20
       start_period: 30s
 
-  # 5 MongoDB shard nodes (one per main package type)
+  # 5 MongoDB shard nodes (one per main package type).
+  # Each runs as a single-node replica set (rs0) so Debezium can read its change stream.
   mongo-https:
     image: mongo:7
     container_name: kafkaflowshard-mongo-https
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27018:27017" ]
     volumes: [ "mongo_https:/data/db" ]
 
   mongo-tcp:
     image: mongo:7
     container_name: kafkaflowshard-mongo-tcp
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27019:27017" ]
     volumes: [ "mongo_tcp:/data/db" ]
 
   mongo-udp:
     image: mongo:7
     container_name: kafkaflowshard-mongo-udp
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27020:27017" ]
     volumes: [ "mongo_udp:/data/db" ]
 
   mongo-arp:
     image: mongo:7
     container_name: kafkaflowshard-mongo-arp
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27021:27017" ]
     volumes: [ "mongo_arp:/data/db" ]
 
   mongo-other:
     image: mongo:7
     container_name: kafkaflowshard-mongo-other
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27022:27017" ]
     volumes: [ "mongo_other:/data/db" ]
+
+  # One-shot: promotes each mongod to a replica set (rs.initiate). Exits when done.
+  mongo-init:
+    image: mongo:7
+    container_name: kafkaflowshard-mongo-init
+    depends_on: [ mongo-https, mongo-tcp, mongo-udp, mongo-arp, mongo-other ]
+    restart: "no"
+    volumes:
+      - ./debezium/mongo-init.sh:/mongo-init.sh:ro
+    entrypoint: ["bash", "/mongo-init.sh"]
+
+  # ---------- CQRS read side: CDC -> Postgres (pg_ivm) + Redis fast-path ----------
+
+  # Kafka Connect with the Debezium MongoDB connector bundled.
+  connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: kafkaflowshard-connect
+    depends_on: [ kafka, mongo-init ]
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: "kafka:9093"
+      GROUP_ID: "connect-cluster"
+      CONFIG_STORAGE_TOPIC: "connect_configs"
+      OFFSET_STORAGE_TOPIC: "connect_offsets"
+      STATUS_STORAGE_TOPIC: "connect_statuses"
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+
+  # registers the 5 Debezium connectors
+  connect-init:
+    image: curlimages/curl:8.10.1
+    container_name: kafkaflowshard-connect-init
+    depends_on: [ connect ]
+    restart: "no"
+    volumes:
+      - ./debezium/register-connectors.sh:/register-connectors.sh:ro
+    entrypoint: ["sh", "/register-connectors.sh"]
+    environment:
+      CONNECT_URL: "http://connect:8083"
+
+  # Postgres + pg_ivm: holds the read model and the incrementally-maintained view.
+  postgres:
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    container_name: kafkaflowshard-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: readmodel
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "readmodel"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Redis: fast-path dedup filter (AOF on for durability; PG is still the source of truth).
+  redis:
+    image: redis:7
+    container_name: kafkaflowshard-redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # srv_read: Debezium consumer -> Postgres (dedup + IMMV) + read API.
+  srv_read:
+    build:
+      context: .
+      dockerfile: srv_read/Dockerfile
+    container_name: kafkaflowshard-srv-read
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      KafkaServer: "kafka:9093"
+      ConsumerGroup: "ReadModelGroup"
+      CdcTopicPattern: "^pcap\\..*packets$$"
+      Postgres__ConnStr: "Host=postgres;Port=5432;Database=readmodel;Username=postgres;Password=postgres"
+      Redis__ConnStr: "redis:6379"
+      Redis__TtlDays: "7"
 
   # MasterNode: TCP server, filter + route to shards 
   masternode:
@@ -110,13 +215,12 @@ services:
       MasterNode__Host: "masternode"
       MasterNode__Port: "8000"
 
-  # srv_pub: generate test packets -> MySQL outbox -> relay -> Kafka (3 replicas)
+  # srv_pub: outbox RELAY — drains the MySQL outbox to Kafka (publish + cleanup jobs).
+  # Packets are no longer generated here; they arrive over gRPC via srv_ingest.
   srv_pub:
     build:
       context: .
       dockerfile: srv_pub/Dockerfile
-    deploy:
-      replicas: 3
     depends_on:
       kafka:
         condition: service_started
@@ -128,8 +232,50 @@ services:
       Topic: "SnapshotTopic"
       RetryTopic: "5sdelay"
       DeadletterTopic: "deadletter"
-      Publisher__BatchSize: "5"
-      Publisher__IntervalMs: "2000"
+
+  # ---------- gRPC ingress: client -> LoadBalancer -> srv_ingest replicas -> outbox ----------
+
+  # gRPC ingest replicas. Each receives packets and writes them to the same MySQL outbox as
+  # srv_pub, so client-sent packets flow through the identical Kafka -> shards -> read pipeline.
+  srv_ingest-1: &ingest
+    build:
+      context: .
+      dockerfile: srv_ingest/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+    environment: &ingest-env
+      KafkaServer: "kafka:9093"
+      SqlConnStr: "server=mysql;port=3306;database=outbox;user=root;password=root"
+      Topic: "SnapshotTopic"
+      GrpcPort: "8080"
+
+  srv_ingest-2:
+    <<: *ingest
+    environment: *ingest-env
+
+  srv_ingest-3:
+    <<: *ingest
+    environment: *ingest-env
+
+  # YARP load balancer: round-robins gRPC (HTTP/2) across the ingest replicas.
+  # SSL is a toggle and defaults OFF (plaintext h2c) so it runs without a certificate.
+  loadbalancer:
+    build:
+      context: .
+      dockerfile: LoadBalancer/Dockerfile
+    container_name: kafkaflowshard-loadbalancer
+    depends_on: [ srv_ingest-1, srv_ingest-2, srv_ingest-3 ]
+    ports:
+      - "5001:5001"
+    environment:
+      Listen__Port: "5001"
+      Ssl__Enabled: "false"
+      # Enable TLS: set Ssl__Enabled=true and mount a PFX at /https/server.pfx
+      # Ssl__CertPath: "/https/server.pfx"
+      # Ssl__CertPassword: "11111"
 
 volumes:
   mysql_data:
@@ -138,3 +284,5 @@ volumes:
   mongo_udp:
   mongo_arp:
   mongo_other:
+  postgres_data:
+  redis_data:

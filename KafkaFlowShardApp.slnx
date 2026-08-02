@@ -1,8 +1,12 @@
 <Solution>
   <Project Path="kafka/kafka.csproj" />
+  <Project Path="LoadBalancer/LoadBalancer.csproj" />
   <Project Path="MasterNode/MasterNode.csproj" />
   <Project Path="outbox/outbox.csproj" />
+  <Project Path="PacketGeneratorConsole/PacketGeneratorConsole.csproj" />
   <Project Path="Shared/Shared.csproj" />
   <Project Path="srv_pub/srv_pub.csproj" />
+  <Project Path="srv_ingest/srv_ingest.csproj" />
+  <Project Path="srv_read/srv_read.csproj" />
   <Project Path="srv_sub/srv_sub.csproj" />
 </Solution>

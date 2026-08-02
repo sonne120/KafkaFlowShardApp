@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+option csharp_namespace = "KafkaFlowShardApp.Ingest.Grpc";
+
+package ingest;
+
+// Ingestion contract: a client (the WPF generator) streams packets in; the load balancer
+// round-robins the calls across srv_ingest replicas, each of which writes to the MySQL outbox.
+service PacketIngest {
+  // Single packet -> single ack.
+  rpc Send (PacketRequest) returns (IngestReply);
+
+  // Client-streaming: push many packets on one HTTP/2 connection, get one summary ack.
+  rpc SendStream (stream PacketRequest) returns (IngestReply);
+}
+
+message PacketRequest {
+  int32  source_port = 1;
+  int32  dest_port   = 2;
+  string source_ip   = 3;
+  string dest_ip     = 4;
+  string source_mac  = 5;
+  string dest_mac    = 6;
+  string proto       = 7;
+}
+
+message IngestReply {
+  bool   ok       = 1;
+  int32  accepted = 2;   // how many packets were written to the outbox
+  string message  = 3;
+}

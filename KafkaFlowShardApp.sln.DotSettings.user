@@ -1,0 +1,10 @@
+﻿<wpf:ResourceDictionary xml:space="preserve" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:s="clr-namespace:System;assembly=mscorlib" xmlns:ss="urn:shemas-jetbrains-com:settings-storage-xaml" xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=15374a92_002De943_002Dd827_002D4a05_002D5be6569bd4fa_0023kafka/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=73688f12_002Dec1d_002Dbce3_002D7af3_002Dfe02af9b8234_0023MasterNode/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=4a469de3_002D770e_002D4dfb_002D0855_002D4668ac316a90_0023outbox/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=22f72e50_002Db86a_002D48a6_002D4252_002D6fdc98c636e8_0023Shared/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=580ae00f_002D4a32_002Dc94b_002D05c8_002D1c7551adb2a8_0023srv_005Fpub/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=2cc7de13_002D7251_002D2657_002Dfd33_002Da198584073b3_0023srv_005Fsub/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=4a7637d4_002Db2c3_002Dfdc7_002D37bf_002Dadffedf40bf6_0023LoadBalancer/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=494080e3_002D00e4_002Dd407_002D541c_002Dbb279eb8e7bb_0023srv_005Fingest/@EntryIndexedValue">True</s:Boolean>
+	<s:Boolean x:Key="/Default/UnloadedProject/UnloadedProjects/=10e38a1f_002Db163_002D2486_002Deef2_002D3d03dc9727b8_0023srv_005Fread/@EntryIndexedValue">True</s:Boolean></wpf:ResourceDictionary>
