@@ -13,35 +13,71 @@ The diagram below illustrates the complete data flow, from packet ingress to the
 -   **CQRS Read Side**: Debezium captures changes from the MongoDB shards and streams them via Kafka to `srv_read`. This service projects the data into a Postgres read model, with Redis acting as a fast-path filter to prevent duplicate processing.
 
 ```
-                                 gRPC Ingress
-┌────────────────────────┐       (HTTP/2)         ┌──────────────┐      ┌────────────────┐      ┌──────────────────┐  publish  ┌───────────┐
-│ PacketGeneratorConsole │ ──────────────┐        │ LoadBalancer │      │ srv_ingest × 3 │      │   MySQL Outbox   │ ◀──────── │  srv_pub  │
-│ PacketGeneratorClient  │               ├───────▶│  YARP :5001  │─────▶│  (gRPC, write) │─────▶│   (durable Q)    │           │  (relay)  │
-└────────────────────────┘               │        └──────────────┘      └────────────────┘      └───────┬──────────┘           └───────────┘
-                                         │                                                              │ poll (SKIP LOCKED)
-                                         │                                                              ▼
-                                         │                                                        ┌───────────┐
-                                         │                                                        │   Kafka   │
-                                         │                                                        │  (5 part) │
-                                         │                                                        └─────┬─────┘
-                                         │                                                              │ consume
-                                         │                                                              ▼
-                                         │                                                        ┌──────────────────┐           ┌───────────────────┐
-                                         │                                                        │    srv_sub × 5   │─── TCP ───▶│    MasterNode     │
-                                         │                                                        │ (1 per part)     │           │ auth · route      │
-                                         │                                                        └──────────────────┘           └────────┬──────────┘
-                                         │                                                                                         │ insert
-                                         │                                                                                         ▼
-  ┌──────────────────────────────────── 5 MongoDB shards (rs0) ──────────────────────────────────┐   ┌──────────────┐          ┌────────────────────┐
-  │   HTTPS | TCP | UDP | ARP | OTHER                                                            │◀──│ Debezium × 5 │◀──────────│      srv_read      │
-  │  :27018-:27022                                                                                 │   │ Kafka Connect│          │ CDC consumer + API │
-  └───────────────────────────────────┬────────────────────────────────────────────────────────────┘   └──────────────┘          └────┬──────────┬────┘
-                                      │ change streams (CDC)                                                ┌──────────┐ check/mark    │          │ GET /stats
-                                      ▼                                                                     │  Redis   │ ◀─────────────┘          ▼
-                                  CQRS Read Side                                                              │ fast-path│            ┌──────────────────┐
-                                                                                                              └──────────┘            │ Postgres + pg_ivm│
-                                                                                                                                      │  (read model)    │
-                                                                                                                                      └──────────────────┘
+┌────────────────────────┐
+│ PacketGeneratorConsole │
+│ PacketGeneratorClient  │
+└────────────────────────┘
+             │ gRPC (HTTP/2)
+             ▼
+┌────────────────────────┐
+│ LoadBalancer (YARP)    │
+│ :5001                  │
+└────────────────────────┘
+             │
+             ▼
+┌────────────────────────┐
+│ srv_ingest × 3         │
+│ (gRPC, write)          │
+└────────────────────────┘
+             │
+             ▼
+┌────────────────────────┐   poll (SKIP LOCKED)   ┌───────────┐
+│     MySQL Outbox       │ ◀───────────────────── │  srv_pub  │
+│     (durable Q)        │                        │  (relay)  │
+└────────────────────────┘                        └───────────┘
+             │ publish
+             ▼
+┌────────────────────────┐
+│      Kafka (5 part)    │
+└────────────────────────┘
+             │ consume
+             ▼
+┌────────────────────────┐
+│ srv_sub × 5            │
+│ (1 per part)           │
+└────────────────────────┘
+             │ TCP
+             ▼
+┌────────────────────────┐
+│      MasterNode        │
+│    (auth · route)      │
+└────────────────────────┘
+             │ insert
+             ▼
+┌────────────────────────────────────┐
+│         CQRS Read Side             │
+│ HTTPS|TCP|UDP|ARP|OTHER            │
+│ :27018-:27022                      │
+└────────────────────────────────────┘
+             │ change streams (CDC)
+             ▼
+┌────────────────────────┐
+│      Debezium × 5      │
+│     (Kafka Connect)    │
+└────────────────────────┘
+             │
+             ▼
+┌────────────────────────┐
+│        srv_read        │
+│  (CDC consumer + API)  │
+└────┬───────────┬───────┘
+     │           │
+     │ check/mark│ GET /stats
+     ▼           ▼
+┌──────────┐ ┌───────────────────┐
+│  Redis   │ │ Postgres + pg_ivm │
+│(fast-path)│ │   (read model)    │
+└──────────┘ └───────────────────┘
 ```
 
 ## Projects
@@ -81,7 +117,6 @@ All shards store into database `pcap`, collection `packets`.
 ```bash
 docker compose up -d --build            # replicas come from deploy.replicas
 docker compose ps                       # srv_pub-1..3, srv_sub-1..5
-# proof all 5 consumers are active (5 partitions across 5 CONSUMER-IDs, lag ~0):
 docker exec kafkaflowshard-kafka kafka-consumer-groups \
   --bootstrap-server localhost:9092 --describe --group ConsumerGroup
 ```
@@ -105,7 +140,6 @@ resolves to one of three outcomes:
 
 ```bash
 docker exec kafkaflowshard-kafka kafka-topics --bootstrap-server localhost:9092 --list
-# force rejections to see it fill: stop a shard so its writes fail
 docker compose stop mongo-arp
 docker exec -it kafkaflowshard-kafka kafka-console-consumer \
   --bootstrap-server localhost:9092 --topic deadletter --from-beginning
