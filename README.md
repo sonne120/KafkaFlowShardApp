@@ -103,29 +103,16 @@ write side and Postgres as the query side.
 
 All shards store into database `pcap`, collection `packets`.
 
-## Projects
+## Components
 
-| Project       | Type            | Role |
-|---------------|-----------------|------|
-| `Shared`      | class library   | `PacketMessage`, `SnapshotMessage`, `ProtocolType`, serializer, API-key hasher |
-| `kafka`       | class library   | `KafkaMessagePub`, `TopicRepository`, `Message` (Kafka producer) |
-| `outbox`      | class library   | Outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence |
-| `srv_pub`     | worker          | Outbox **relay**: drains the MySQL outbox to Kafka (publish + cleanup jobs). No longer generates packets |
-| `srv_sub`     | worker          | Consumes Kafka, forwards over TCP, commits on `"Ok"` |
-| `srv_ingest`  | gRPC server     | Accepts packets over gRPC and writes them to the MySQL outbox (write-only; relay is owned by `srv_pub`) |
-| `LoadBalancer`| YARP proxy      | Round-robins gRPC (HTTP/2) across `srv_ingest` replicas; SSL toggle (default off) |
-| `srv_read`    | worker + API    | CQRS read side: Debezium CDC consumer → Postgres (pg_ivm IMMV) + Redis fast-path, serves the read API |
-| `PacketGeneratorConsole` | console (any OS) | Cross-platform gRPC generator — the packet source. Run on macOS/Linux/Windows |
-| `PacketGeneratorClient`  | WPF (Windows)    | Desktop gRPC generator (same role, Windows-only UI) |
-| `MasterNode`  | console (Akka)  | TCP server: auth → filter → route to 5 shards → insert → reply |
-
-### Outbox notes
-
-- EF provider is **Pomelo MySQL**; the outbox transaction uses `RepeatableRead` isolation.
-- Outbox `Id` is `CHAR(36)` (a `UUID()`).
-- The reservation **stored procedure** `GetDataFromTempTable` is created on startup.
-- `srv_pub` runs `IOutboxInitializer.InitializeAsync` on startup (with retry) to create
-  the table + procedure.
+*   **`PacketGeneratorConsole` / `PacketGeneratorClient`**: gRPC clients that generate and send packets into the system.
+*   **`LoadBalancer`**: YARP-based reverse proxy that round-robins gRPC traffic to ingest services.
+*   **`srv_ingest`**: gRPC service that receives packets and writes them to the MySQL outbox.
+*   **`srv_pub`**: Worker that relays packets from the MySQL outbox to Kafka.
+*   **`srv_sub`**: Worker that consumes packets from Kafka and forwards them to the `MasterNode`.
+*   **`MasterNode`**: Akka.NET TCP server that authenticates, filters, and routes packets to the appropriate MongoDB shard.
+*   **`srv_read`**: CQRS read-side service. It consumes CDC events from Debezium/Kafka, projects them into a Postgres read model, and exposes a read API for querying statistics.
+*   **Shared Libraries**: `Shared`, `kafka`, and `outbox` provide common data models, Kafka producer logic, and outbox persistence logic, respectively.
 
 ## Scaling
 
