@@ -5,12 +5,7 @@ using KafkaFlowShardApp.Shared;
 
 namespace KafkaFlowShardApp.Ingest.Services;
 
-/// <summary>
-/// gRPC ingestion endpoint. Each accepted packet is written to the same MySQL outbox that
-/// srv_pub uses — so client-sent packets flow through the identical outbox -> Kafka ->
-/// MasterNode -> shards -> read-model pipeline. The outbox give us the durable, no-dual-write
-/// guarantee; this service just maps the wire message into a SnapshotMessage and stores it.
-/// </summary>
+
 public sealed class PacketIngestService : PacketIngest.PacketIngestBase
 {
     private readonly IServiceScopeFactory _scopeFactory;
@@ -39,14 +34,13 @@ public sealed class PacketIngestService : PacketIngest.PacketIngestBase
     public override async Task<IngestReply> SendStream(
         IAsyncStreamReader<PacketRequest> requestStream, ServerCallContext context)
     {
-        // One scope (and one DB context) for the whole stream.
+  
         using var scope = _scopeFactory.CreateScope();
         var outbox = scope.ServiceProvider.GetRequiredService<IOutbox>();
 
         var accepted = 0;
         var batch = new List<SnapshotMessage>();
-        // Batching writes to the outbox is much more efficient than one transaction per packet.
-        // This size could be made configurable.
+
         const int maxBatchSize = 100;
 
         await foreach (var request in requestStream.ReadAllAsync(context.CancellationToken))
@@ -70,13 +64,10 @@ public sealed class PacketIngestService : PacketIngest.PacketIngestBase
         return new IngestReply { Ok = true, Accepted = accepted, Message = $"stored {accepted}" };
     }
 
-    // This method assumes IOutbox has a batch-capable method like `AddManyAsync`.
-    // If not, one should be added to avoid one transaction per message, which is inefficient.
+
     private async Task WriteBatchAsync(IOutbox outbox, IReadOnlyCollection<SnapshotMessage> packets, CancellationToken ct)
     {
-        // In a real-world scenario with a batch-capable IOutbox, this would be a single call:
-        // await outbox.AddManyAsync(messages, ct);
-        // For now, we iterate to maintain functionality while showing the batching pattern.
+ 
         foreach (var packet in packets)
         {
             await WritePacketAsync(outbox, packet, ct);
