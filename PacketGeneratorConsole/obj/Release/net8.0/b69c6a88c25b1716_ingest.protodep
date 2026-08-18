@@ -1,2 +1,0 @@
-obj/Release/net8.0/Ingest.cs \
-obj/Release/net8.0/IngestGrpc.cs: ../protos/ingest.proto
