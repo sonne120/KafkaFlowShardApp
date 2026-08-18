@@ -180,6 +180,38 @@ dotnet run --project srv_sub
 dotnet run --project srv_pub
 ```
 
+## CQRS read side — CDC → Postgres (pg_ivm) + Redis
+The pipeline above is the write side. The read side adds an analytics/query model without touching it: Debezium captures what actually landed in the Mongo shards (post-routing truth) and streams it to a new microservice that projects it into Postgres, where a pg_ivm incrementally maintained view keeps per-protocol summaries live.
+
+  ┌──────────────┐ change  ┌───────────┐  pcap.&lt;shard&gt;     ┌──────────────┐ INSERT  ┌──────────────────┐
+  │ 5 Mongo      │ streams  │ Debezium  │  .pcap.packets    │   srv_read   │ ON CONF │ Postgres + pg_ivm│
+  │ shards (rs0) │ ───────▶ │ MongoDB   │ ────────────────▶ │ CDC consumer │ ──────▶ │ packet_ledger    │
+  │ https…other  │          │ connector │     (Kafka)       │  + REST API  │         │  UNIQUE(tx_id)   │
+  └──────────────┘          │    × 5    │                   └──────┬───────┘         │   │ trigger      │
+                            └───────────┘            ① check │      │ ③ mark         │   ▼              │
+                                                ┌──────────┐ │      │                │ packet_stats_by_ │
+                                 fast-path ───▶ │  Redis   │ ◀──────┘                │  proto  (IMMV)   │
+                                    filter      └──────────┘                         └────────┬─────────┘
+                                                                                              │ SELECT
+  per-message crash-safe order (CdcConsumer.cs):                          web client          │ (no agg)
+    ① Redis EXISTS rm:tx ?  ── seen ──▶ skip + ack                            └─ GET /stats/* ─┘
+    ② Postgres txn: ledger ON CONFLICT(tx_id) + client_state version-guard
+    ③ Redis SET rm:tx   (mark ONLY after the commit)   ④ Kafka commit offset (ack)
+Why CDC and not just a new consumer group on SnapshotTopic? Because the shards hold the post-routing truth — what survived auth → filter → routing. Rejected and dead-lettered packets never reach the shards, so reading the shards (via CDC) summarizes what was actually stored, not what was merely published.
+
+Correctness: at-least-once in, exactly-once projected
+Kafka is at-least-once, so the projection is made idempotent. srv_read processes each event in a deliberate, crash-safe order (srv_read/CdcConsumer.cs):
+
+Redis fast-path — a read-only EXISTS rm:tx:&lt;id&gt; check skips known duplicates before they cost a Postgres round-trip. Redis is a filter, never the source of truth.
+Postgres commit — one transaction applies both guards:
+dedup: INSERT … ON CONFLICT (transaction_id) DO NOTHING (permanent, not TTL-bound);
+ordering: client_state upsert with WHERE EXCLUDED.version &gt; client_state.version (drops "hello from the past" for last-value views; inert for commutative counts).
+Redis mark — SET rm:tx:&lt;id&gt; happens only after the commit.
+Kafka ack — commit the offset last.
+A crash between steps 2 and 3/4 is safe: on redelivery Redis still says "not seen", the re-INSERT hits ON CONFLICT DO NOTHING, and nothing is lost or doubled. This is the Postgres-first order — the only crash-safe one.
+
+The per-protocol summary is a pg_ivm IMMV (postgres/init.sql): count/min/max are commutative, so a trigger maintains them on every INSERT — no REFRESH, no query-time aggregation.
+
 ## Live pipeline
 
 ![KafkaFlowShardApp live logs](assets/terminal.png)
