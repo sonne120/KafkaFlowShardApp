@@ -1,7 +1,6 @@
 # PacketShard
 
 > **PacketShard — protocol-sharded packet pipeline: Kafka + outbox, Akka.NET routing, at-least-once delivery (offset commit after DB write).**
-
 > **Read side: Debezium CDC streams shard writes back through Kafka into an idempotent Postgres projection (pg_ivm live stats), with Redis fast-path dedup — at-least-once in, exactly-once projected.**
 
 Microservice pipeline: packets enter over **gRPC through a load balancer**, flow through a
@@ -10,6 +9,17 @@ Microservice pipeline: packets enter over **gRPC through a load balancer**, flow
 write side and Postgres as the query side. End-to-end the pipeline guarantees **at-least-once
 delivery**: a Kafka offset is committed **only after** the packet has been durably written to its
 shard, and the read-side projection turns at-least-once input into an **exactly-once** result.
+
+**Contents:**
+[Architecture](#architecture) ·
+[Akka.NET routing](#akkanet-routing-inside-the-masternode) ·
+[At-least-once delivery](#at-least-once-delivery-offset-commit-after-db-write) ·
+[Projects](#projects) ·
+[The 5 shards](#the-5-shards-one-mongodb-instance-per-main-package-type) ·
+[CQRS read side](#cqrs-read-side--cdc--postgres-pg_ivm--redis) ·
+[Scaling](#scaling) ·
+[Retries & dead-letter](#retries--dead-letter) ·
+[Run it](#run-it)
 
 ## Architecture
 
@@ -21,20 +31,6 @@ Two invariants hold at every hop:
 - **At-least-once delivery** — `srv_sub` commits its Kafka offset **only after** the MasterNode
   confirms the shard write with `"Ok"` (**offset commit after DB write**). A crash at any point
   causes redelivery, never loss.
-
-Key stages:
-
-- **gRPC ingress**: clients stream packets over gRPC (HTTP/2) to a YARP load balancer, which
-  round-robins them across `srv_ingest` instances. Each instance writes the packet to the MySQL
-  outbox inside a transaction — durable before the client call returns.
-- **Outbox relay**: `srv_pub` polls the outbox with `FOR UPDATE SKIP LOCKED` and publishes to
-  Kafka, eliminating the dual-write problem: nothing is lost if Kafka is down.
-- **Akka.NET routing**: the MasterNode is an Akka.NET actor system that authenticates, filters by
-  protocol, and routes each packet to one of 5 MongoDB shard nodes (see
-  [Akka.NET routing](#akkanet-routing-inside-the-masternode)).
-- **CQRS read side**: Debezium captures changes from the MongoDB shards and streams them via
-  Kafka to `srv_read`, which projects the data into a Postgres read model (pg_ivm), with Redis as
-  a fast-path duplicate filter.
 
 ```
 ┌────────────────────────┐
@@ -80,29 +76,51 @@ Key stages:
              │ insert (proto-routed)
              ▼
 ┌────────────────────────────────────┐
-│    5 MongoDB shards (write side)   │
+│  5 MongoDB shards (write side, rs0)│
 │ HTTPS │ TCP │ UDP │ ARP │ OTHER    │
 │ :27018 – :27022                    │
 └────────────────────────────────────┘
              │ change streams (CDC)
              ▼
-┌────────────────────────┐
-│      Debezium × 5      │
-│     (Kafka Connect)    │
-└────────────────────────┘
-             │ pcap.* topics
+┌────────────────────────────┐
+│      Debezium × 5          │
+│     (MongoDB connector)    │
+└────────────────────────────┘
+             │ pcap.<shard>.packets
              ▼
-┌────────────────────────┐
-│        srv_read        │
-│  (CDC consumer + API)  │
-└────┬───────────┬───────┘
-     │ check/mark│ GET /stats
-     ▼           ▼
-┌──────────┐ ┌───────────────────┐
-│  Redis   │ │ Postgres + pg_ivm │
-│(fast-path)│ │   (read model)    │
-└──────────┘ └───────────────────┘
+┌────────────────────────────┐
+│         Kafka              │
+│     (pcap.* topics)        │
+└────────────────────────────┘
+             │ consume (at-least-once in)
+             ▼
+┌────────────────────────────┐    INSERT ON CONFLICT ┌───────────────────┐
+│        srv_read            │ ────────────────────▶ │ Postgres + pg_ivm │
+│   (CDC consumer + API)     │  ② commit first       │   packet_ledger   │
+└──────────┬─────────────────┘                       │  UNIQUE(tx_id)    │
+           │                                         │  packet_stats_by_ │
+           │ ① check   ③ mark (after commit)         │  proto (IMMV)     │
+           ▼                                         └───────────────────┘
+┌────────────────────────────┐                              ▲ SELECT
+│       Redis                │                              │ (no agg)
+│    (fast-path filter)      │ ◀────────────────────────────┘
+└────────────────────────────┘           web client (GET /stats/*)
+                                  ④ Kafka offset commit — always last
 ```
+
+Key stages:
+
+- **gRPC ingress**: clients stream packets over gRPC (HTTP/2) to a YARP load balancer, which
+  round-robins them across `srv_ingest` instances. Each instance writes the packet to the MySQL
+  outbox inside a transaction — durable before the client call returns.
+- **Outbox relay**: `srv_pub` polls the outbox with `FOR UPDATE SKIP LOCKED` and publishes to
+  Kafka, eliminating the dual-write problem: nothing is lost if Kafka is down.
+- **Akka.NET routing**: the MasterNode is an Akka.NET actor system that authenticates, filters by
+  protocol, and routes each packet to one of 5 MongoDB shard nodes (see
+  [Akka.NET routing](#akkanet-routing-inside-the-masternode)).
+- **CQRS read side**: Debezium captures changes from the MongoDB shards and streams them via
+  Kafka to `srv_read`, which projects the data into a Postgres read model (pg_ivm), with Redis as
+  a fast-path duplicate filter.
 
 ## Akka.NET routing (inside the MasterNode)
 
@@ -177,7 +195,8 @@ var processed = await _forwarder.SendAsync(envelope.Payload, stoppingToken);
 if (processed) _consumer.Commit(result);
 ```
 
-Failure analysis — what happens when a component dies mid-flight:
+<details>
+<summary><b>Failure analysis</b> — what happens when a component dies mid-flight</summary>
 
 |Crash point                              |Outcome                                                             |
 |-----------------------------------------|--------------------------------------------------------------------|
@@ -185,11 +204,16 @@ Failure analysis — what happens when a component dies mid-flight:
 |after Kafka publish, before offset commit|packet redelivered to `srv_sub` → forwarded again (at-least-once)   |
 |after shard insert, before offset commit |packet redelivered → duplicate insert absorbed by read-side dedup   |
 
+</details>
+
 Duplicates are therefore possible by design — and that is exactly why the read side makes its
 projection idempotent (see
 [Correctness: at-least-once in, exactly-once projected](#correctness-at-least-once-in-exactly-once-projected)).
 
 ## Projects
+
+<details>
+<summary><b>Project map</b> — what each service and library does</summary>
 
 - **`PacketGeneratorConsole` / `PacketGeneratorClient`**: gRPC clients that generate randomized
   test packets and stream them into the system.
@@ -209,6 +233,8 @@ projection idempotent (see
   API-key hasher), `kafka` (`KafkaMessagePub`, `TopicRepository`, producer `Message`), and
   `outbox` (outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence).
 
+</details>
+
 ## The 5 shards (one MongoDB instance per “main package” type)
 
 |Shard|Protocol(s)                            |Host port|
@@ -221,7 +247,8 @@ projection idempotent (see
 
 All shards store into database `pcap`, collection `packets`.
 
-### Outbox notes
+<details>
+<summary><b>Outbox notes</b> — MySQL implementation details</summary>
 
 - EF provider is **Pomelo MySQL**; the outbox transaction uses `RepeatableRead` isolation.
 - Outbox `Id` is `CHAR(36)` (a `UUID()`).
@@ -229,45 +256,16 @@ All shards store into database `pcap`, collection `packets`.
 - `srv_ingest` runs `IOutboxInitializer.InitializeAsync` on startup (with retry) to create the
   table + procedure.
 
+</details>
+
 ## CQRS read side — CDC → Postgres (pg_ivm) + Redis
 
 The pipeline above is the write side. The read side adds an analytics/query model without touching
 it: Debezium captures what actually landed in the Mongo shards (post-routing truth) and streams it
 to a dedicated microservice that projects it into Postgres, where a pg_ivm incrementally
-maintained view keeps per-protocol summaries live.
-
-```
-┌────────────────────────────┐
-│   5 Mongo shards (rs0)     │
-│   HTTPS|TCP|UDP|ARP|OTHER  │
-└────────────────────────────┘
-             │ change streams (CDC)
-             ▼
-┌────────────────────────────┐
-│      Debezium × 5          │
-│     (MongoDB connector)    │
-└────────────────────────────┘
-             │ pcap.<shard>.packets
-             ▼
-┌────────────────────────────┐
-│         Kafka              │
-│     (pcap.* topics)        │
-└────────────────────────────┘
-             │ consume (at-least-once in)
-             ▼
-┌────────────────────────────┐    INSERT ON CONFLICT ┌───────────────────┐
-│        srv_read            │ ────────────────────▶ │ Postgres + pg_ivm │
-│   (CDC consumer + API)     │  ② commit first       │   packet_ledger   │
-└──────────┬─────────────────┘                       │  UNIQUE(tx_id)    │
-           │                                         │  packet_stats_by_ │
-           │ ① check   ③ mark (after commit)         │  proto (IMMV)     │
-           ▼                                         └───────────────────┘
-┌────────────────────────────┐                              ▲ SELECT
-│       Redis                │                              │ (no agg)
-│    (fast-path filter)      │ ◀────────────────────────────┘
-└────────────────────────────┘           web client (GET /stats/*)
-                                  ④ Kafka offset commit — always last
-```
+maintained view keeps per-protocol summaries live. The full read-side flow — shards → Debezium →
+Kafka `pcap.*` topics → `srv_read` → Postgres/Redis, with the numbered ①–④ processing order — is
+shown in the tail of the [main architecture diagram](#architecture) above.
 
 Why CDC and not just a new consumer group on SnapshotTopic? Because the shards hold the
 post-routing truth — what survived auth → filter → routing. Rejected and dead-lettered packets
@@ -316,6 +314,9 @@ instead of app-level locks:
 
 Replica counts are set in `docker-compose.yml` via `deploy.replicas`.
 
+<details>
+<summary><b>Verify the scaling</b> — commands</summary>
+
 ```
 docker compose up -d --build            # replicas come from deploy.replicas
 docker compose ps                       # srv_pub-1..3, srv_sub-1..5
@@ -323,6 +324,8 @@ docker compose ps                       # srv_pub-1..3, srv_sub-1..5
 docker exec kafkaflowshard-kafka kafka-consumer-groups \
   --bootstrap-server localhost:9092 --describe --group ConsumerGroup
 ```
+
+</details>
 
 ## Retries & dead-letter
 
@@ -344,6 +347,9 @@ to one of three outcomes:
   failure (rewind and wait — the packet is still good), while an explicit rejection is a
   *processing* failure (count it, and quarantine the packet after 3 strikes).
 
+<details>
+<summary><b>Watch the dead-letter topic fill</b> — commands</summary>
+
 ```
 docker exec kafkaflowshard-kafka kafka-topics --bootstrap-server localhost:9092 --list
 # force rejections to see it fill: stop a shard so its writes fail
@@ -351,6 +357,8 @@ docker compose stop mongo-arp
 docker exec -it kafkaflowshard-kafka kafka-console-consumer \
   --bootstrap-server localhost:9092 --topic deadletter --from-beginning
 ```
+
+</details>
 
 ## Run it
 
@@ -373,7 +381,8 @@ docker exec -it kafkaflowshard-mongo-https mongosh --eval 'db.getSiblingDB("pcap
 docker exec -it kafkaflowshard-mongo-arp   mongosh --eval 'db.getSiblingDB("pcap").packets.countDocuments()'
 ```
 
-### Option B — infra in Docker, apps on the host
+<details>
+<summary><b>Option B</b> — infra in Docker, apps on the host</summary>
 
 ```
 cd PacketShard
@@ -387,6 +396,8 @@ dotnet run --project MasterNode
 dotnet run --project srv_sub
 dotnet run --project srv_pub
 ```
+
+</details>
 
 ## Live pipeline
 
