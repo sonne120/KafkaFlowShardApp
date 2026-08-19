@@ -1,4 +1,4 @@
-# KafkaFlowShardApp
+# PacketShard
 
 Microservice pipeline: packets enter over **gRPC through a load balancer**, flow through a
 **MySQL outbox → Kafka → MasterNode → 5 MongoDB shards** write path, and are projected by
