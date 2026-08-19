@@ -4,6 +4,8 @@
 
 > **Read side: Debezium CDC streams shard writes back through Kafka into an idempotent Postgres projection (pg_ivm live stats), with Redis fast-path dedup — at-least-once in, exactly-once projected.**
 
+> **High availability (optional): the MySQL outbox tier runs as a semi-synchronous primary/replica pair behind ProxySQL, so an acknowledged packet already exists on two nodes before the client call returns — switched on with one line in `.env`.**
+
 Microservice pipeline: packets enter over **gRPC through a load balancer**, flow through a
 **MySQL outbox → Kafka → Akka.NET MasterNode → 5 MongoDB shards** write path, and are projected by
 **CDC (Debezium) into a Postgres read model (pg_ivm)** — a CQRS split with the protocol shards as the
@@ -128,6 +130,9 @@ Key stages:
 
 ## Akka.NET routing (inside the MasterNode)
 
+<details>
+<summary><b>Why an actor system</b> — isolation, lock-free concurrency, and an explicit backpressure point</summary>
+
 The MasterNode is not a monolithic handler — it is an **Akka.NET actor system** exposed as a TCP
 server. Every inbound connection and every shard destination is an actor, which gives the routing
 stage three properties for free:
@@ -140,7 +145,10 @@ stage three properties for free:
 - **Explicit backpressure point** — the `"Ok"` reply is generated only after the shard actor’s
   insert succeeds, which is exactly the signal `srv_sub` waits for before committing its offset.
 
-Message flow through the actor system:
+</details>
+
+<details>
+<summary><b>Message flow</b> — TCP listener → connection handler → filter → 5 shard actors, and the “Ok” back</summary>
 
 ```
         TCP (from srv_sub × 5)
@@ -177,6 +185,44 @@ Message flow through the actor system:
 
 The reply path is the heart of the delivery guarantee: **“Ok” flows backwards from the shard
 insert to the Kafka commit**, so the offset moves only when the data is already on disk in Mongo.
+
+</details>
+
+<details>
+<summary><b>When something fails</b> — which failures are reported, which are retried, and which burn an attempt</summary>
+
+The routing stage distinguishes a packet that *cannot* be stored from infrastructure that is
+*momentarily* unavailable. Confusing the two either quarantines good packets or retries a poison
+one forever, so each failure has a defined answer:
+
+|What fails                       |What the MasterNode does                                   |What `srv_sub` does                                          |
+|---------------------------------|-----------------------------------------------------------|-------------------------------------------------------------|
+|A shard's MongoDB node is down   |`ShardWriterActor` catches the write error and replies `Write failed: …` — the actor stays alive|treats it as a rejection: counts an attempt, re-queues, dead-letters after 3|
+|Invalid API key                  |replies `Invalid API Key` and closes the connection        |the connection drops; nothing is routed                       |
+|Malformed payload                |`proto` cannot be parsed, so it routes to the `OTHER` shard rather than dropping the packet|normal path — it is stored, not lost                          |
+|A connection handler actor crashes|only that socket's actor dies; the listener and the five shard actors are untouched|reconnects on the next message                                |
+|The whole MasterNode is down     |nothing to reply                                            |`SendAsync` returns `null` — rewind the offset, wait 2s, retry. **Not** counted as an attempt|
+
+That last row is the important asymmetry. An unreachable MasterNode is a *transport* failure and
+the packet is still good, so retrying forever is correct. An explicit rejection is a *processing*
+failure, so it is counted and eventually quarantined. See
+[Retries & dead-letter](#retries--dead-letter).
+
+Two details worth stating precisely, because the actor model is often assumed to do more than it
+does here:
+
+- **The shard writers do not actually crash on a failed write.** `ShardWriterActor` catches the
+  exception and answers with an error string, so no supervision restart occurs on the Mongo path —
+  isolation shows up as *the other four shards keep working*, not as a restart. A shard that is
+  down produces rejections, not an outage.
+- **There is no custom `SupervisorStrategy`.** Anything that does throw gets Akka's default
+  one-for-one restart, which is the right behaviour for a per-connection handler and is why one
+  bad socket cannot take the listener with it.
+
+The write path's own database tier has a separate failover story — see
+[High availability](#high-availability-optional).
+
+</details>
 
 ## At-least-once delivery (offset commit after DB write)
 
