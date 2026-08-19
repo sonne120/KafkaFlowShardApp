@@ -6,7 +6,10 @@
 #   docker compose -f docker-compose.yml -f ha/docker-compose.ha.yml up -d --build
 #
 # App changes required (srv_ingest, srv_pub):
-#   ConnectionStrings:Outbox -> Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb
+#   ConnectionStrings:Outbox -> Server=proxysql;Port=6033;...;SslMode=None
+#   SslMode=None because ProxySQL's frontend does not terminate TLS, and
+#   AllowPublicKeyRetrieval because 'app' uses caching_sha2_password, which
+#   needs the server's RSA key when the connection is not encrypted.
 #
 # Remove/disable the old single `mysql` service from the main compose file.
 # ============================================================================
@@ -46,7 +49,7 @@ services:
       ha-bootstrap:
         condition: service_completed_successfully
     environment:
-      ConnectionStrings__Outbox: "Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb"
+      ConnectionStrings__Outbox: "Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb;SslMode=None;AllowPublicKeyRetrieval=true"
 
   srv_ingest-2: *ha-app
 
@@ -67,8 +70,8 @@ services:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: outboxdb
     volumes:
-      - ./mysql/conf.d:/etc/mysql/conf.d:ro
-      - ./mysql/master-init:/docker-entrypoint-initdb.d:ro
+      - ./ha/mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./ha/mysql/master-init:/docker-entrypoint-initdb.d:ro
       - mysql-master-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
@@ -85,8 +88,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root
     volumes:
-      - ./mysql/conf.d:/etc/mysql/conf.d:ro
-      - ./mysql/slave-init:/docker-entrypoint-initdb.d:ro
+      - ./ha/mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./ha/mysql/slave-init:/docker-entrypoint-initdb.d:ro
       - mysql-slave-data:/var/lib/mysql
     depends_on:
       mysql-master:
@@ -105,7 +108,7 @@ services:
       - "6033:6033"   # app traffic
       - "6032:6032"   # admin (mysql protocol)
     volumes:
-      - ./proxysql/proxysql.cnf:/etc/proxysql.cnf:ro
+      - ./ha/proxysql/proxysql.cnf:/etc/proxysql.cnf:ro
     depends_on:
       mysql-master:
         condition: service_healthy
@@ -115,13 +118,13 @@ services:
 
   orchestrator:
     build:
-      context: ./orchestrator
+      context: ./ha/orchestrator
     container_name: kafkaflowshard-orchestrator
     ports:
       - "3000:3000"   # web UI + API
     volumes:
-      - ./orchestrator/orchestrator.conf.json:/etc/orchestrator.conf.json:ro
-      - ./orchestrator/hooks:/hooks:ro
+      - ./ha/orchestrator/orchestrator.conf.json:/etc/orchestrator.conf.json:ro
+      - ./ha/orchestrator/hooks:/hooks:ro
       - orchestrator-data:/var/lib/orchestrator
     depends_on:
       mysql-master:
@@ -139,7 +142,7 @@ services:
     container_name: kafkaflowshard-ha-bootstrap
     entrypoint: ["bash", "/scripts/bootstrap.sh"]
     volumes:
-      - ./scripts:/scripts:ro
+      - ./ha/scripts:/scripts:ro
     depends_on:
       mysql-master:
         condition: service_healthy

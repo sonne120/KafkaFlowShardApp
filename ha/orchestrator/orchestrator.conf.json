@@ -25,7 +25,7 @@
 
   "ApplyMySQLPromotionAfterMasterFailover": true,
   "PreventCrossDataCenterMasterFailover": false,
-  "FailMasterPromotionOnLagMinutes": 1,
+  "FailMasterPromotionOnLagMinutes": 0,
   "DelayMasterPromotionIfSQLThreadNotUpToDate": true,
 
   "OnFailureDetectionProcesses": [

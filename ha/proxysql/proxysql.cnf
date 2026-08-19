@@ -64,6 +64,14 @@ mysql_users=
         username="app"
         password="apppass"
         default_hostgroup=0
+        # Required, not optional. ProxySQL multiplexes frontend connections onto
+        # backend ones, and without a default_schema the backend session lands in
+        # information_schema regardless of the Database= in the app's connection
+        # string. The relay sends `CALL GetDataFromTempTable(...)` unqualified
+        # (MySqlConnector relies on the session schema), so it resolves in the
+        # wrong database and fails with a misleading
+        #   Access denied for user 'app'@'%' to database 'outboxdb'
+        default_schema="outboxdb"
         transaction_persistent=1   # keep FOR UPDATE SKIP LOCKED txns pinned
         active=1
     }
@@ -71,5 +79,20 @@ mysql_users=
 
 mysql_query_rules=
 (
-    # intentionally empty: everything follows default_hostgroup=0 (writer)
+    # Routing is uniform (everything goes to the writer), but multiplexing is
+    # not safe for the relay's reservation call. ProxySQL hands each statement
+    # to whichever backend connection is free, and `CALL GetDataFromTempTable`
+    # is sent unqualified — it resolves against the backend session's current
+    # schema. On a connection that has drifted off outboxdb it fails with a
+    # misleading "Access denied for user 'app'@'%' to database 'outboxdb'",
+    # intermittently, only for the relay and never for the ingest INSERTs.
+    # multiplex=0 pins the connection for these calls.
+    {
+        rule_id=1
+        active=1
+        match_digest="^CALL"
+        destination_hostgroup=0
+        multiplex=0
+        apply=1
+    }
 )

@@ -8,20 +8,20 @@
 set -euo pipefail
 
 echo "[bootstrap] waiting for mysql-master..."
-until mysql -h mysql-master -uroot -proot --skip-ssl -e "SELECT 1" &>/dev/null; do sleep 2; done
+until mysql -h mysql-master -uroot -proot -e "SELECT 1" &>/dev/null; do sleep 2; done
 
 echo "[bootstrap] waiting for mysql-slave replication to be configured..."
-until mysql -h mysql-slave -uroot -proot --skip-ssl \
+until mysql -h mysql-slave -uroot -proot \
       -e "SHOW REPLICA STATUS\G" 2>/dev/null | grep -q "Replica_IO_Running: Yes"; do
   sleep 2
 done
 
 echo "[bootstrap] appointing mysql-master as writer (runtime only)..."
-mysql -h mysql-master -uroot -proot --skip-ssl -e \
+mysql -h mysql-master -uroot -proot -e \
   "SET GLOBAL super_read_only = OFF; SET GLOBAL read_only = OFF;"
 
 echo "[bootstrap] verifying semi-sync is active on the source..."
-mysql -h mysql-master -uroot -proot --skip-ssl -e \
+mysql -h mysql-master -uroot -proot -e \
   "SHOW STATUS LIKE 'Rpl_semi_sync_source_status';"
 
 echo "[bootstrap] registering topology with orchestrator..."

@@ -14,7 +14,7 @@ FAILED_HOST="${1:?failedHost argument required}"
 
 echo "[fence] hard-offlining ${FAILED_HOST} in ProxySQL"
 
-mysql -h proxysql -P 6032 -u admin -padmin --skip-ssl -e "
+mysql -h proxysql -P 6032 -u admin -padmin --ssl-mode=DISABLED -e "
   UPDATE mysql_servers SET status='OFFLINE_HARD' WHERE hostname='${FAILED_HOST}';
   LOAD MYSQL SERVERS TO RUNTIME;
   SAVE MYSQL SERVERS TO DISK;"

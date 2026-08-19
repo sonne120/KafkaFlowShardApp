@@ -69,7 +69,7 @@ primary; locks do not exist on a replica.
 ## Verify semi-sync
 
 ```bash
-docker exec kafkaflowshard-mysql-master mysql -uroot -proot --skip-ssl -e "
+docker exec kafkaflowshard-mysql-master mysql -uroot -proot --ssl-mode=DISABLED -e "
   SHOW STATUS LIKE 'Rpl_semi_sync_source_status';        -- ON
   SHOW STATUS LIKE 'Rpl_semi_sync_source_no_tx';         -- async-fallback counter (alert on growth)
   SHOW STATUS LIKE 'Rpl_semi_sync_source_avg_net_wait_time';"
@@ -80,7 +80,7 @@ docker exec kafkaflowshard-mysql-master mysql -uroot -proot --skip-ssl -e "
 ```bash
 docker compose stop mysql-slave
 # writes continue after the 5s semi-sync timeout; no_tx starts growing:
-docker exec kafkaflowshard-mysql-master mysql -uroot -proot --skip-ssl \
+docker exec kafkaflowshard-mysql-master mysql -uroot -proot --ssl-mode=DISABLED \
   -e "SHOW STATUS LIKE 'Rpl_semi_sync_source_no_tx';"
 docker compose start mysql-slave     # GTID catches up, status back to ON
 ```
@@ -102,7 +102,7 @@ docker exec kafkaflowshard-orchestrator cat /tmp/recovery.log
 # t≈8s  [fence] hard-offlining mysql-master in ProxySQL
 
 # proxysql moved the writer HG:
-docker exec kafkaflowshard-proxysql mysql -h127.0.0.1 -P6032 -uadmin -padmin --skip-ssl \
+docker exec kafkaflowshard-proxysql mysql -h127.0.0.1 -P6032 -uadmin -padmin --ssl-mode=DISABLED \
   -e "SELECT hostgroup_id, hostname, status FROM runtime_mysql_servers;"
 ```
 
@@ -136,7 +136,7 @@ re-parents it as a replica of the new source (visible in the UI). Once
 `Replica_IO_Running: Yes`, re-admit it to the reader hostgroup:
 
 ```bash
-docker exec kafkaflowshard-proxysql mysql -h127.0.0.1 -P6032 -uadmin -padmin --skip-ssl -e "
+docker exec kafkaflowshard-proxysql mysql -h127.0.0.1 -P6032 -uadmin -padmin --ssl-mode=DISABLED -e "
   UPDATE mysql_servers SET status='ONLINE' WHERE hostname='mysql-master';
   LOAD MYSQL SERVERS TO RUNTIME; SAVE MYSQL SERVERS TO DISK;"
 ```

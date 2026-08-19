@@ -92,7 +92,7 @@ services:
       - ./debezium/mongo-init.sh:/mongo-init.sh:ro
     entrypoint: ["bash", "/mongo-init.sh"]
 
-  # ---------- CQRS read side: CDC -> Postgres (pg_ivm) + Redis fast-path ----------
+  #CQRS read side: CDC -> Postgres (pg_ivm) + Redis fast-path -- Debezium + Kafka Connect + srv_read
 
   # Kafka Connect with the Debezium MongoDB connector bundled.
   connect:

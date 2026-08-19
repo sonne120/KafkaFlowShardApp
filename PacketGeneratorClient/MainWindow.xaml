@@ -3,7 +3,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Packet Generator (gRPC → LoadBalancer)" Height="520" Width="720">
     <DockPanel Margin="10">
-        <!-- Connection / options -->
         <GroupBox DockPanel.Dock="Top" Header="Target" Padding="8">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -25,13 +24,10 @@
             </Grid>
         </GroupBox>
 
-        <!-- Actions -->
         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,8,0,8">
             <Button x:Name="SendButton" Content="Send packets" Width="130" Click="SendButton_Click"/>
             <TextBlock x:Name="StatusText" Text="Idle" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>
-
-        <!-- Log -->
         <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas"
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                  TextWrapping="NoWrap"/>

@@ -16,8 +16,14 @@
 
 [mysqld]
 # --- failsafe: boot read-only, writer is appointed externally -------------
-read-only            = ON
-super-read-only      = ON
+# NOT set here. The official entrypoint runs its bootstrap (CREATE DATABASE,
+# user creation, /docker-entrypoint-initdb.d) against a temporary server that
+# reads this same conf.d, so a file-level super_read_only aborts first boot with
+# ERROR 1290 before any init script runs. The init scripts instead end with
+#     SET PERSIST read_only = ON; SET PERSIST super_read_only = ON;
+# which writes mysqld-auto.cnf and is read on every subsequent start. Same
+# invariant, applied after bootstrap rather than during it: a node that restarts
+# comes back read-only, and writability stays a runtime appointment.
 
 # --- binlog / GTID (required for auto-positioning and clean failover) -----
 log-bin              = mysql-bin
@@ -31,17 +37,24 @@ relay-log            = relay-bin
 plugin-load-add      = semisync_source.so
 plugin-load-add      = semisync_replica.so
 
-rpl_semi_sync_source_enabled        = ON
-rpl_semi_sync_replica_enabled       = ON
-rpl_semi_sync_source_wait_point     = AFTER_SYNC
-rpl_semi_sync_source_wait_for_replica_count = 1
+# The loose_ prefix is required, not cosmetic. `mysqld --initialize` explicitly
+# skips plugin loading ("Ignoring --plugin-load[_add] list as the server is
+# running with --initialize"), so on a first boot these plugin-provided
+# variables are unknown. Without loose_, MySQL treats an unknown variable as
+# fatal, aborts mid-initialize, and leaves a datadir that has InnoDB files but
+# no system tables — after which every later boot skips init (the directory is
+# not empty) and dies with "Table 'mysql.user' doesn't exist".
+loose_rpl_semi_sync_source_enabled        = ON
+loose_rpl_semi_sync_replica_enabled       = ON
+loose_rpl_semi_sync_source_wait_point     = AFTER_SYNC
+loose_rpl_semi_sync_source_wait_for_replica_count = 1
 
 # Degradation policy. 5000 ms = after 5s without replica acks the source
 # silently falls back to async (availability > durability). For the strict
 # mode where a node WITHOUT a live replica cannot commit at all (hard
 # split-brain write lock; ingest halts if the replica dies), set:
 #   rpl_semi_sync_source_timeout = 4294967295
-rpl_semi_sync_source_timeout        = 5000
+loose_rpl_semi_sync_source_timeout        = 5000
 
 # --- misc ------------------------------------------------------------------
 authentication_policy = caching_sha2_password

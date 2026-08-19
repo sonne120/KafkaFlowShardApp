@@ -28,5 +28,10 @@ CHANGE REPLICATION SOURCE TO
 START REPLICA;
 SQL
 
+# Same failsafe as the master (see master-init/01-users.sql): persisted, so it
+# survives restarts, and applied after the entrypoint's bootstrap rather than
+# via conf.d, which would have blocked that bootstrap.
+mysql -uroot -proot -e "SET PERSIST read_only = ON; SET PERSIST super_read_only = ON;"
+
 echo "[slave-init] replica configured. GTID auto-position will survive the"
 echo "[slave-init] entrypoint's restart of mysqld — replication resumes on boot."

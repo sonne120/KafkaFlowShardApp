@@ -25,8 +25,22 @@ GRANT REPLICATION CLIENT ON *.* TO 'monitor'@'%';
 --    EXECUTE is required for the GetDataFromTempTable stored procedure,
 --    CREATE/CREATE ROUTINE for IOutboxInitializer.InitializeAsync.
 CREATE USER IF NOT EXISTS 'app'@'%' IDENTIFIED WITH caching_sha2_password BY 'apppass';
+--    CREATE TEMPORARY TABLES is required too: GetDataFromTempTable builds a
+--    TempOutboxIds temp table to hold the ids it reserved. Without it every
+--    relay poll fails with "Access denied for user 'app'@'%' to database
+--    'outboxdb'", which reads like a database-level grant problem rather than
+--    a missing privilege on one statement.
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, INDEX, DROP,
-      CREATE ROUTINE, ALTER ROUTINE, EXECUTE, LOCK TABLES
+      CREATE ROUTINE, ALTER ROUTINE, EXECUTE, LOCK TABLES,
+      CREATE TEMPORARY TABLES
       ON outboxdb.* TO 'app'@'%';
 
 FLUSH PRIVILEGES;
+
+-- Arm the split-brain failsafe. PERSIST (not the config file) so that the
+-- bootstrap above could run: this writes mysqld-auto.cnf, so every later start
+-- comes back read-only. Promotion uses SET GLOBAL, which does not persist —
+-- so a promoted node that restarts reverts to read-only and waits to be
+-- appointed again.
+SET PERSIST read_only       = ON;
+SET PERSIST super_read_only = ON;

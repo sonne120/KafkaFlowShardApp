@@ -16,7 +16,6 @@ shard, and the read-side projection turns at-least-once input into an **exactly-
 [Akka.NET routing](#akkanet-routing-inside-the-masternode) ·
 [At-least-once delivery](#at-least-once-delivery-offset-commit-after-db-write) ·
 [Projects](#projects) ·
-[The 5 shards](#the-5-shards-one-mongodb-instance-per-main-package-type) ·
 [CQRS read side](#cqrs-read-side--cdc--postgres-pg_ivm--redis) ·
 [Scaling](#scaling) ·
 [High availability](#high-availability-optional) ·
@@ -58,6 +57,8 @@ Two invariants hold at every hop:
 │     MySQL Outbox       │ ◀───────────────────── │  srv_pub  │
 │     (durable Q)        │                        │  (relay)  │
 └────────────────────────┘                        └───────────┘
+    ▲ one node by default; a primary/replica pair behind ProxySQL
+      when the HA overlay is on — see "High availability" below
              │ publish (no dual-write)
              ▼
 ┌────────────────────────┐
@@ -243,9 +244,8 @@ projection idempotent (see
 
 </details>
 
-
 <details>
-<summary><b>he 5 shards (one MongoDB instance per “main package” type)</b> </summary>
+<summary><b>The 5 shards</b> — one MongoDB instance per “main package” type</summary>
 
 |Shard|Protocol(s)                            |Host port|
 |-----|---------------------------------------|---------|
@@ -389,6 +389,70 @@ The overlay makes three couplings so the base file stays untouched:
 |`orchestrator`|topology detection, promotion, re-parenting; web UI + API            |3000|
 |`ha-bootstrap`|one-shot: appoints the initial writer, registers the topology         |—   |
 
+### Data flow through a failover
+
+Steady state — every app connection goes to ProxySQL, which keeps exactly one node in the writer
+hostgroup and decides which by polling `super_read_only`:
+
+```
+srv_ingest × 3 ─┐
+                ├──▶ ProxySQL :6033 ──▶ hostgroup 0  ┌──────────────┐
+srv_pub (relay)─┘      (writer only)    ═══════════▶ │ mysql-master │  read_only = OFF
+                                                     └──────┬───────┘  (appointed)
+                                        hostgroup 1         │ semi-sync AFTER_SYNC
+                                        (parked, no traffic)│ commit waits for the
+                                                     ┌──────▼───────┐ replica's ack
+                                                     │ mysql-slave  │  super_read_only = ON
+                                                     └──────────────┘
+```
+
+The source commits only after a replica has the binlog event, so an acknowledged outbox row exists
+on two nodes before `srv_ingest` returns to the client — the same *durability before
+acknowledgment* invariant the rest of the pipeline follows.
+
+When the primary dies:
+
+```
+  ① mysql-master gone          ② promote                    ③ ProxySQL re-elects
+┌──────────────┐            ┌──────────────┐              ┌──────────────┐
+│ mysql-master │  ✗         │ mysql-slave  │              │ mysql-slave  │
+│   (down)     │            │ super_ro=OFF │              │ hostgroup 0  │◀── writes resume
+└──────────────┘            └──────────────┘              └──────────────┘
+      │                            ▲                             ▲
+      │ writes fail                │ SET GLOBAL (runtime only,   │ monitor sees
+      ▼                            │ never persisted)            │ read_only flip
+  srv_ingest returns an error ─────┴─────────────────────────────┘
+  srv_pub's PublishAsync throws → transaction rolls back
+```
+
+Nothing in flight is lost, because every stage already assumes this can happen:
+
+|In flight when the primary dies                |What happens                                                        |
+|-----------------------------------------------|--------------------------------------------------------------------|
+|gRPC call mid-`AddAsync`                       |the insert fails, the client gets an error and retries — the packet was never acknowledged|
+|outbox rows reserved but not yet published      |`PublishAsync` throws, the transaction rolls back, `IsProcessing` clears; the next relay tick re-reserves them|
+|rows published to Kafka but not marked processed|the same rows are reserved again after promotion and re-published — Kafka is at-least-once by design, and the read side's `ON CONFLICT DO NOTHING` absorbs the duplicate|
+|rows already marked processed                   |committed on the old primary *and* acked by the replica before the commit returned, so they survive the promotion|
+
+The failure mode this design refuses is a **second writer**. A crashed primary that restarts comes
+back `super_read_only` (persisted in `mysqld-auto.cnf`), so it cannot accept writes on the way up;
+ProxySQL leaves it in the reader hostgroup until something appoints it. Promotion is always
+`SET GLOBAL`, which does not survive a restart — so the appointment has to be made deliberately,
+every time.
+
+> **Automatic promotion does not currently work.** Orchestrator issues `SHOW SLAVE STATUS`, which
+> MySQL 8.4 removed in favour of `SHOW REPLICA STATUS`, so topology discovery fails with
+> `Error 1064` and step ② never fires on its own. Replication, semi-sync and ProxySQL's re-election
+> all work — a promotion done by hand propagates correctly:
+>
+> ```
+> docker exec kafkaflowshard-mysql-slave mysql -uroot -proot \
+>   -e "SET GLOBAL super_read_only = OFF; SET GLOBAL read_only = OFF;"
+> ```
+>
+> Restoring automatic failover means pinning the HA nodes to `mysql:8.0`; openark/orchestrator has
+> no 8.4-compatible release.
+
 Writability is a **runtime** appointment (`SET GLOBAL`, never `SET PERSIST`): any node that
 restarts comes back read-only, which is the split-brain failsafe. Details and failover drills are
 in `ha/README-HA.md`.
@@ -475,19 +539,33 @@ dotnet run --project srv_pub
 ## Tests
 
 `PacketShard.Tests` covers the pipeline in two lanes. The split is by **cost**, not by layer — the
-unit lane runs anywhere in a couple of seconds, the infrastructure lane starts real databases via
+unit lane runs anywhere in a few seconds, the infrastructure lane starts real databases via
 Testcontainers:
 
 ```
-dotnet test                                       # 142 tests
-dotnet test --filter "Category=Unit"              # 101 tests, ~2s, no Docker required
-dotnet test --filter "Category=Infrastructure"    #  41 tests, ~30s, needs Docker
+dotnet test                                       # 142 tests, ~33s
+dotnet test --filter "Category=Unit"              # 101 tests,  ~5s, no Docker required
+dotnet test --filter "Category=Infrastructure"    #  41 tests, ~33s, needs Docker
 ```
 
-Both lanes are tagged explicitly, so `Category=Unit` selects the fast one by name. `--filter
-"Category!=Infrastructure"` picks the same 101 tests today, but it also sweeps up anything added
-later without a trait — handy as a CI gate that fails loudly if a new container test forgets its
-tag, and the wrong choice if you want only what is known to be in-process.
+Those are wall-clock times, which is what you actually wait for. xunit's own `Duration:` line
+reports only the time spent inside test bodies — it says `2 s` and `26 s` for the two lanes,
+excluding build, test-host startup and, for the infrastructure lane, container startup. Most of
+that lane's wall clock is databases booting rather than assertions running: it starts a fresh
+Postgres (and, for the projection tests, a Redis) **per test** rather than sharing one. The MySQL
+suite shares a container per class and empties the table between tests instead, because MySQL
+boots an order of magnitude slower.
+
+A full run costs about the same as the infrastructure lane alone — xunit runs test classes in
+parallel, so the 101 in-process tests finish while the containers are still coming up.
+
+Both lanes are tagged explicitly, so `Category=Unit` selects the fast one by name.
+`--filter "Category!=Infrastructure"` picks the same 101 tests today, but it also sweeps up
+anything added later without a trait — handy as a CI gate that fails loudly if a new container
+test forgets its tag, and the wrong choice if you want only what is known to be in-process.
+
+CI runs the two lanes as separate jobs (`.github/workflows/ci.yml`), so a broken branch is
+reported by the fast one without waiting on Docker.
 
 ### Why parts of it need real databases
 
