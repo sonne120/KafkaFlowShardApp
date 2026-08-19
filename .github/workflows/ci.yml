@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+
+  unit:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - run: dotnet restore PacketShard.slnx
+      - name: Build (warnings are errors)
+        run: dotnet build PacketShard.slnx --no-restore -warnaserror
+
+      - name: Unit tests
+        run: >
+          dotnet test PacketShard.slnx --no-build
+          --filter "Category=Unit"
+          --logger "trx;LogFileName=unit.trx"
+          --results-directory TestResults
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: TestResults/
+
+  integration:
+    name: Integration tests (Testcontainers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the pg_ivm Postgres image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./postgres
+          load: true
+          tags: packetshard-postgres:ci
+          cache-from: type=gha,scope=postgres
+          cache-to: type=gha,scope=postgres,mode=max
+
+      - name: Pre-pull the other test images
+        run: docker pull mysql:8.0 & docker pull redis:7 & wait
+
+      - run: dotnet restore PacketShard.slnx
+
+      - run: dotnet build PacketShard.slnx --no-restore
+
+      - name: Integration tests
+        env:
+          PACKETSHARD_TEST_PG_IMAGE: packetshard-postgres:ci
+        run: >
+          dotnet test PacketShard.slnx --no-build
+          --filter "Category=Infrastructure"
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory TestResults
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: TestResults/
+
+  compose:
+    name: Compose topologies resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Single-node topology
+        env:
+          COMPOSE_FILE: docker-compose.yml
+        run: |
+          docker compose config --format json > single.json
+          jq -e '.services | has("mysql")' single.json > /dev/null
+          jq -e '.services.srv_pub.depends_on | has("mysql")' single.json > /dev/null
+
+      - name: HA topology
+        env:
+          COMPOSE_FILE: docker-compose.yml:ha/docker-compose.ha.yml
+        run: |
+          docker compose config --format json > ha.json
+
+          # The HA tier is present...
+          jq -e '.services | has("mysql-master")' ha.json > /dev/null
+          jq -e '.services | has("proxysql")' ha.json > /dev/null
+
+          # ...and the single-node MySQL is gone. Asserted with jq -e rather than
+          # `! grep`, which would skip errexit and never fail the step.
+          jq -e '.services | has("mysql") | not' ha.json > /dev/null
+
+          # Parking mysql behind a profile is not enough on its own: compose pulls a
+          # profiled service back in when an active service still depends_on it, so
+          # every app override must have dropped that edge.
+          for svc in srv_pub srv_ingest-1 srv_ingest-2 srv_ingest-3; do
+            jq -e --arg s "$svc" '.services[$s].depends_on | has("ha-bootstrap")' ha.json > /dev/null
+            jq -e --arg s "$svc" '.services[$s].depends_on | has("mysql") | not' ha.json > /dev/null
+          done
+
+          # The apps must be pointed at ProxySQL, not left on the parked node.
+          jq -e '.services.srv_pub.environment.ConnectionStrings__Outbox | test("proxysql")' ha.json > /dev/null
