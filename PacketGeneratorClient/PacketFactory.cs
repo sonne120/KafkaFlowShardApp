@@ -2,10 +2,6 @@ using PacketShard.Ingest.Grpc;
 
 namespace PacketShard.PacketGeneratorClient;
 
-/// <summary>
-/// Builds randomized packets to feed the ingest pipeline — the client-side mirror of the
-/// server's PacketGenerator. ("Regenerate packages for the current app.")
-/// </summary>
 public sealed class PacketFactory
 {
     private static readonly string[] Protocols = { "HTTPS", "TCP", "UDP", "ARP", "ICMP", "DNS" };

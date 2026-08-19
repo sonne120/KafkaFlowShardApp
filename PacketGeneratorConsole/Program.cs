@@ -1,13 +1,10 @@
 using Grpc.Net.Client;
 using PacketShard.Ingest.Grpc;
 
-// Console packet generator — the cross-platform twin of the WPF client. Generates random
-// packets and streams them through the LoadBalancer over gRPC.
-//
+
 // Usage:
 //   dotnet run --project PacketGeneratorConsole -- [--url http://localhost:5001]
-//                                                   [--count 50] [--ssl] [--loop] [--delay 1000]
-//
+//   [--count 50] [--ssl] [--loop] [--delay 1000]
 //   --url    LoadBalancer address (default http://localhost:5001)
 //   --count  packets per batch (default 50)
 //   --ssl    use TLS (default OFF — plaintext h2c). SSL toggle, false position.
@@ -20,8 +17,6 @@ var delay = int.TryParse(GetOption(args, "--delay"), out var d) ? d : 1000;
 var useSsl = HasFlag(args, "--ssl");
 var loop = HasFlag(args, "--loop");
 
-// SSL toggle (false position by default): with TLS off we speak plaintext HTTP/2 (h2c),
-// which gRPC only permits once this switch is set.
 if (!useSsl)
     AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
@@ -77,7 +72,7 @@ static string? GetOption(string[] args, string name)
 
 static bool HasFlag(string[] args, string name) => Array.IndexOf(args, name) >= 0;
 
-// Random packet builder — mirrors the server-side generator.
+// Random packet builder
 internal sealed class PacketFactory
 {
     private static readonly string[] Protocols = { "HTTPS", "TCP", "UDP", "ARP", "ICMP", "DNS" };

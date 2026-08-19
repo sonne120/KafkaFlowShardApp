@@ -1,0 +1,47 @@
+# ============================================================================
+# Shared by BOTH nodes (master and slave). server-id comes from compose args.
+#
+# Design invariants:
+#   1. Every node boots read-only. A writer is APPOINTED (by ha-bootstrap
+#      initially, by Orchestrator on failover) — never self-appointed.
+#      This is the split-brain failsafe: a crashed master that restarts
+#      comes back read-only and stays that way.
+#   2. Both semi-sync plugins are loaded on both nodes, so either node can
+#      play either role after a failover without a restart.
+#   3. AFTER_SYNC (lossless semi-sync): the engine commit happens only
+#      after a replica has the binlog event. An acked transaction exists
+#      in >= 2 places — same "durability before acknowledgment" invariant
+#      the rest of the PacketShard pipeline follows.
+# ============================================================================
+
+[mysqld]
+# --- failsafe: boot read-only, writer is appointed externally -------------
+read-only            = ON
+super-read-only      = ON
+
+# --- binlog / GTID (required for auto-positioning and clean failover) -----
+log-bin              = mysql-bin
+gtid-mode            = ON
+enforce-gtid-consistency = ON
+binlog-format        = ROW
+log-replica-updates  = ON
+relay-log            = relay-bin
+
+# --- semi-synchronous replication -----------------------------------------
+plugin-load-add      = semisync_source.so
+plugin-load-add      = semisync_replica.so
+
+rpl_semi_sync_source_enabled        = ON
+rpl_semi_sync_replica_enabled       = ON
+rpl_semi_sync_source_wait_point     = AFTER_SYNC
+rpl_semi_sync_source_wait_for_replica_count = 1
+
+# Degradation policy. 5000 ms = after 5s without replica acks the source
+# silently falls back to async (availability > durability). For the strict
+# mode where a node WITHOUT a live replica cannot commit at all (hard
+# split-brain write lock; ingest halts if the replica dies), set:
+#   rpl_semi_sync_source_timeout = 4294967295
+rpl_semi_sync_source_timeout        = 5000
+
+# --- misc ------------------------------------------------------------------
+authentication_policy = caching_sha2_password

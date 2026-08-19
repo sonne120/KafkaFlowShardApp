@@ -27,8 +27,6 @@ public partial class MainWindow : Window
         StatusText.Text = "Sending…";
         try
         {
-            // SSL toggle (false position by default): with TLS off we talk plaintext HTTP/2
-            // (h2c) over an http:// address, which gRPC only allows once this switch is set.
             if (!useSsl)
                 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 

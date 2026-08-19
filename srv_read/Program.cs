@@ -15,13 +15,13 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(
 builder.Services.AddSingleton(sp =>
     new RedisFastPath(sp.GetRequiredService<IConnectionMultiplexer>(), TimeSpan.FromDays(redisTtlDays)));
 builder.Services.AddSingleton<ReadModelStore>();
+builder.Services.AddSingleton<ProjectionHandler>();
 builder.Services.AddHostedService<CdcConsumer>();
 
 var app = builder.Build();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// Read side: served straight from the pg_ivm IMMV — no aggregation at query time.
 app.MapGet("/stats/protocols", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
     const string sql = """

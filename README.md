@@ -19,8 +19,10 @@ shard, and the read-side projection turns at-least-once input into an **exactly-
 [The 5 shards](#the-5-shards-one-mongodb-instance-per-main-package-type) ·
 [CQRS read side](#cqrs-read-side--cdc--postgres-pg_ivm--redis) ·
 [Scaling](#scaling) ·
+[High availability](#high-availability-optional) ·
 [Retries & dead-letter](#retries--dead-letter) ·
-[Run it](#run-it)
+[Run it](#run-it) ·
+[Tests](#tests)
 
 ## Architecture
 
@@ -204,6 +206,9 @@ if (processed) _consumer.Commit(result);
 |after outbox insert, before Kafka publish|relay re-reserves the row on restart → published later, nothing lost|
 |after Kafka publish, before offset commit|packet redelivered to `srv_sub` → forwarded again (at-least-once)   |
 |after shard insert, before offset commit |packet redelivered → duplicate insert absorbed by read-side dedup   |
+|after Postgres commit, before Redis mark |redelivery re-INSERTs → `ON CONFLICT DO NOTHING` absorbs it, no double count|
+
+Every row above is an executable test rather than a claim — see [Tests](#tests).
 
 </details>
 
@@ -227,16 +232,20 @@ projection idempotent (see
   commits the offset only on `"Ok"` (at-least-once).
 - **`MasterNode`**: Akka.NET TCP server — actor pipeline that authenticates the API key, filters
   each packet by `proto`, and routes it to the matching MongoDB shard.
-- **`srv_read`**: CQRS read-side service. Consumes CDC events from Debezium/Kafka, projects them
-  into a Postgres read model (pg_ivm), uses Redis as a fast-path duplicate filter, and exposes a
-  read API (`GET /stats/*`).
+- **`srv_read`**: CQRS read-side service. `CdcConsumer` consumes CDC events from Debezium/Kafka
+  and hands each to `ProjectionHandler`, which projects it into a Postgres read model (pg_ivm)
+  using Redis as a fast-path duplicate filter. Exposes a read API (`GET /stats/*`).
 - **Shared libraries**: `Shared` (`PacketMessage`, `SnapshotMessage`, `ProtocolType`, serializer,
   API-key hasher), `kafka` (`KafkaMessagePub`, `TopicRepository`, producer `Message`), and
   `outbox` (outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence).
+- **`PacketShard.Tests`**: one test project covering all of the above, split into a fast in-process
+  lane and a Testcontainers-backed lane — see [Tests](#tests).
 
 </details>
 
-## The 5 shards (one MongoDB instance per “main package” type)
+
+<details>
+<summary><b>he 5 shards (one MongoDB instance per “main package” type)</b> </summary>
 
 |Shard|Protocol(s)                            |Host port|
 |-----|---------------------------------------|---------|
@@ -247,6 +256,7 @@ projection idempotent (see
 |5    |OTHER (everything else, e.g. ICMP, DNS)|27022    |
 
 All shards store into database `pcap`, collection `packets`.
+</details>
 
 <details>
 <summary><b>Outbox notes</b> — MySQL implementation details</summary>
@@ -254,8 +264,11 @@ All shards store into database `pcap`, collection `packets`.
 - EF provider is **Pomelo MySQL**; the outbox transaction uses `RepeatableRead` isolation.
 - Outbox `Id` is `CHAR(36)` (a `UUID()`).
 - The reservation **stored procedure** `GetDataFromTempTable` is created on startup.
-- `srv_ingest` runs `IOutboxInitializer.InitializeAsync` on startup (with retry) to create the
-  table + procedure.
+- Both `srv_ingest` and `srv_pub` run `IOutboxInitializer.InitializeAsync` on startup (with retry,
+  since MySQL may still be warming up). It is idempotent, so whichever wins the race is fine.
+- The connection string is read from `ConnectionStrings:Outbox`, falling back to `SqlConnStr`.
+  That fallback is what lets the [HA overlay](#high-availability-optional) repoint the apps at
+  ProxySQL without touching the base compose file or `appsettings.json`.
 
 </details>
 
@@ -277,22 +290,29 @@ what was merely published.
 
 Kafka is at-least-once (by design — see
 [At-least-once delivery](#at-least-once-delivery-offset-commit-after-db-write)), so the projection
-is made idempotent. `srv_read` processes each event in a deliberate, crash-safe order
-(`srv_read/CdcConsumer.cs`):
+is made idempotent. `ProjectionHandler` (`srv_read/ProjectionHandler.cs`) applies a deliberate,
+crash-safe order to every event; `CdcConsumer` around it is only Kafka plumbing — subscription,
+the consume loop, and when to commit:
 
 1. **Redis fast-path** — a read-only `EXISTS rm:tx:<id>` check skips known duplicates before they
    cost a Postgres round-trip. Redis is a filter, never the source of truth.
-1. **Postgres commit** — one transaction applies both guards:
-- dedup: `INSERT … ON CONFLICT (transaction_id) DO NOTHING` (permanent, not TTL-bound);
-- ordering: `client_state` upsert with `WHERE EXCLUDED.version > client_state.version` (drops
-  “hello from the past” for last-value views; inert for commutative counts).
-1. **Redis mark** — `SET rm:tx:<id>` happens **only after** the commit.
-1. **Kafka ack** — commit the offset last.
+2. **Postgres commit** — one transaction applies both guards:
+   - dedup: `INSERT … ON CONFLICT (transaction_id) DO NOTHING` (permanent, not TTL-bound);
+   - ordering: `client_state` upsert with `WHERE EXCLUDED.version > client_state.version` (drops
+     “hello from the past” for last-value views; inert for commutative counts).
+3. **Redis mark** — `SET rm:tx:<id>` happens **only after** the commit.
+4. **Kafka ack** — commit the offset last.
 
 A crash between steps 2 and 3/4 is safe: on redelivery Redis still says “not seen”, the re-INSERT
 hits `ON CONFLICT DO NOTHING`, and nothing is lost or doubled. This is the **Postgres-first**
-order — the only crash-safe one. Note the symmetry with the write side: both `srv_sub` and
-`srv_read` follow the same principle — **persist first, acknowledge (commit the offset) last**.
+order — the only crash-safe one. Reversing steps 2 and 3 would make Redis lie: the fast path would
+skip a transaction Postgres never stored, and the packet would vanish without a trace. Note the
+symmetry with the write side: both `srv_sub` and `srv_read` follow the same principle —
+**persist first, acknowledge (commit the offset) last**.
+
+Splitting the handler out of the consumer is what makes that order testable: it can be driven
+against a real Postgres and a real Redis with no broker in the loop
+(see [Tests](#tests)).
 
 The per-protocol summary is a pg_ivm **IMMV** (`postgres/init.sql`): `count`/`min`/`max` are
 commutative, so a trigger maintains them on every INSERT — no `REFRESH`, no query-time
@@ -327,6 +347,51 @@ docker exec packetshard-kafka kafka-consumer-groups \
 ```
 
 </details>
+
+## High availability (optional)
+
+The single `mysql` service is the write path's one hard dependency: if it is down, `srv_ingest`
+cannot accept a packet at all, because the outbox insert *is* the durability guarantee. `ha/`
+replaces it with a semi-synchronous primary + replica pair, [Orchestrator](https://github.com/openark/orchestrator)
+for failover detection and promotion, and ProxySQL routing the apps to whichever node is currently
+writable.
+
+It ships as a compose **overlay**, so the main `docker-compose.yml` needs no edits. The mode is one
+line in `.env`:
+
+```
+# HA mode: semi-sync MySQL + Orchestrator + ProxySQL
+COMPOSE_FILE=docker-compose.yml:ha/docker-compose.ha.yml
+
+# single-node mode: comment the line out
+```
+
+Everything after that is the usual `docker compose up -d --build`.
+
+The overlay makes three couplings so the base file stays untouched:
+
+- **The old `mysql` is parked**, not deleted — compose cannot remove a service during a merge, but
+  `profiles: ["disabled"]` means nothing ever starts it. Parking alone is not enough, though:
+  compose pulls a profiled service back in when an *active* service still `depends_on` it, so the
+  app overrides drop that dependency with `depends_on: !override` (compose ≥ 2.24).
+- **The apps wait for a writer.** `srv_ingest-1..3` and `srv_pub` gain
+  `depends_on: ha-bootstrap (service_completed_successfully)`, so they never start against a node
+  that is still `super_read_only`.
+- **The connection string is repointed** via `ConnectionStrings__Outbox` → ProxySQL on `:6033`.
+  The base file's `SqlConnStr` is still present in the merged environment and is simply outranked,
+  which is what makes the toggle symmetric in both directions.
+
+|Component     |Role                                                                 |Port|
+|--------------|---------------------------------------------------------------------|----|
+|`mysql-master`|semi-sync source; writable only by runtime appointment               |—   |
+|`mysql-slave` |semi-sync replica, `super_read_only` until promoted                   |—   |
+|`proxysql`    |routes the app to hostgroup 0 (the writer), follows `super_read_only`|6033 (app), 6032 (admin)|
+|`orchestrator`|topology detection, promotion, re-parenting; web UI + API            |3000|
+|`ha-bootstrap`|one-shot: appoints the initial writer, registers the topology         |—   |
+
+Writability is a **runtime** appointment (`SET GLOBAL`, never `SET PERSIST`): any node that
+restarts comes back read-only, which is the split-brain failsafe. Details and failover drills are
+in `ha/README-HA.md`.
 
 ## Retries & dead-letter
 
@@ -375,6 +440,10 @@ srv_pub, the ingress tier (LoadBalancer + srv_ingest) and the read side (Debeziu
 Redis, srv_read). Watch the logs: srv_pub publishes, srv_sub forwards, MasterNode prints
 `[shard:Https] saved ...` etc.
 
+Which MySQL topology comes up depends on `.env` — a single `mysql` node by default, or the
+primary/replica pair behind ProxySQL if the [HA overlay](#high-availability-optional) is enabled.
+`docker compose ps` will tell you which you got.
+
 Inspect what landed in a shard:
 
 ```
@@ -387,7 +456,10 @@ docker exec -it packetshard-mongo-arp   mongosh --eval 'db.getSiblingDB("pcap").
 
 ```
 cd PacketShard
-# Start only Kafka + MySQL + the 5 Mongo shards
+# Start only Kafka + MySQL + the 5 Mongo shards.
+# In HA mode the MySQL service is `mysql-master` (plus `mysql-slave proxysql orchestrator
+# ha-bootstrap`) rather than `mysql` — `docker compose config --services` lists what your
+# current .env resolves to.
 docker compose up -d zookeeper kafka mysql mongo-https mongo-tcp mongo-udp mongo-arp mongo-other
 
 docker compose logs -f srv_pub srv_sub masternode
@@ -399,6 +471,55 @@ dotnet run --project srv_pub
 ```
 
 </details>
+
+## Tests
+
+`PacketShard.Tests` covers the pipeline in two lanes. The split is by **cost**, not by layer — the
+unit lane runs anywhere in a couple of seconds, the infrastructure lane starts real databases via
+Testcontainers:
+
+```
+dotnet test                                       # 142 tests
+dotnet test --filter "Category=Unit"              # 101 tests, ~2s, no Docker required
+dotnet test --filter "Category=Infrastructure"    #  41 tests, ~30s, needs Docker
+```
+
+Both lanes are tagged explicitly, so `Category=Unit` selects the fast one by name. `--filter
+"Category!=Infrastructure"` picks the same 101 tests today, but it also sweeps up anything added
+later without a trait — handy as a CI gate that fails loudly if a new container test forgets its
+tag, and the wrong choice if you want only what is known to be in-process.
+
+### Why parts of it need real databases
+
+Most of the guarantees this README claims are enforced by the database, not by the C#:
+`ON CONFLICT (transaction_id) DO NOTHING`, `WHERE EXCLUDED.version > client_state.version`,
+`FOR UPDATE SKIP LOCKED`, and the pg_ivm trigger. Against a mock every one of those tests would
+pass while the system was broken, so they run against the real engines:
+
+- **Postgres** is built from `postgres/Dockerfile`, so the container carries pg_ivm and applies
+  `postgres/init.sql` through the official entrypoint — the schema under test is the deployed one.
+  Redelivering an event leaves one ledger row *and* an IMMV count of 1; eight concurrent
+  projections of the same transaction insert exactly once.
+- **MySQL** proves the reservation: 40 rows, 4 concurrent relay workers each asking for all 40,
+  asserting the union is 40 distinct ids. That is `FOR UPDATE SKIP LOCKED` and nothing else.
+- **Redis + Postgres together** execute the crash-point table above — the durable write commits,
+  the Redis marker is deliberately never set, and the redelivery must be absorbed by Postgres
+  dedup rather than double-counted.
+
+### The MasterNode needs no containers
+
+The routing stage takes its shard `Props` as a constructor argument, so the five MongoDB writers
+can be swapped for `TestProbe`s: a packet with `proto: "UDP"` is asserted to reach the UDP probe
+**and no other**. The auth gate is tested the same way — an invalid API key must produce
+`"Invalid API Key"`, close the connection, and route nothing.
+
+### Failure paths are tested as first-class behaviour
+
+A test suite that only covers success would miss the point of a durable pipeline. The suite pins
+the unhappy paths too: a failing Kafka publish rolls the outbox transaction back and leaves the
+row pending for the next tick; a failing Postgres write leaves no Redis marker behind; an
+abandoned reservation returns to the pool when it expires; a malformed CDC value is skipped rather
+than crashing the consumer.
 
 ## Live pipeline
 

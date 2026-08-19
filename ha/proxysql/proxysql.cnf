@@ -1,0 +1,75 @@
+# ============================================================================
+# ProxySQL initial configuration (applied on first start, when
+# /var/lib/proxysql/proxysql.db does not exist yet).
+#
+# Routing model for PacketShard:
+#   hostgroup 0 = writer  (the ONLY hostgroup the app uses)
+#   hostgroup 1 = reader  (parking lot for read-only nodes; no query
+#                          rules route anything here — deliberate, because
+#                          srv_pub's FOR UPDATE SKIP LOCKED and the outbox
+#                          stored procedure must always hit the primary)
+#
+# Writer election is automatic: ProxySQL polls @@global.super_read_only
+# on every server (check_type below). Orchestrator promotes a node by
+# clearing super_read_only -> ProxySQL moves it into hostgroup 0.
+# A revived ex-master boots read-only (see replication.cnf) -> it lands
+# in hostgroup 1 and receives no traffic.
+# ============================================================================
+
+datadir="/var/lib/proxysql"
+
+admin_variables=
+{
+    admin_credentials="admin:admin"
+    mysql_ifaces="0.0.0.0:6032"
+}
+
+mysql_variables=
+{
+    interfaces="0.0.0.0:6033"
+    default_query_delay=0
+    default_query_timeout=36000000
+    poll_timeout=2000
+    server_version="8.4.0"
+    threads=4
+    max_connections=2048
+
+    monitor_username="monitor"
+    monitor_password="monitorpass"
+    monitor_connect_interval=2000
+    monitor_ping_interval=2000
+    monitor_read_only_interval=1500
+    monitor_read_only_timeout=1000
+}
+
+mysql_replication_hostgroups=
+(
+    {
+        writer_hostgroup=0
+        reader_hostgroup=1
+        check_type="super_read_only"
+        comment="packetshard outbox cluster"
+    }
+)
+
+mysql_servers=
+(
+    { address="mysql-master", port=3306, hostgroup=0, max_connections=200 },
+    { address="mysql-slave",  port=3306, hostgroup=1, max_connections=200 }
+)
+
+mysql_users=
+(
+    {
+        username="app"
+        password="apppass"
+        default_hostgroup=0
+        transaction_persistent=1   # keep FOR UPDATE SKIP LOCKED txns pinned
+        active=1
+    }
+)
+
+mysql_query_rules=
+(
+    # intentionally empty: everything follows default_hostgroup=0 (writer)
+)

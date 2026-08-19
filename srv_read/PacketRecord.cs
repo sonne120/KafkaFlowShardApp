@@ -1,3 +1,4 @@
+using System.Globalization;
 using Newtonsoft.Json.Linq;
 
 namespace PacketShard.Read;
@@ -73,6 +74,27 @@ public sealed record PacketRecord(
         if (token.Type == JTokenType.Integer)
             return DateTimeOffset.FromUnixTimeMilliseconds(token.Value<long>());
 
-        return DateTimeOffset.TryParse(token.Value<string>(), out var parsed) ? parsed : null;
+        // Newtonsoft's reader converts an ISO-8601 string into a Date token before we ever see
+        // it, so what arrives here is a DateTime, not the original text. Reading it back through
+        // Value<string>() renders it with the current culture and *without* an offset
+        // ("01/01/2026 12:00:00"), and DateTimeOffset.TryParse then re-applies the host's local
+        // offset — silently shifting every timestamp by the server's UTC offset for that date.
+        if (token is JValue { Value: DateTimeOffset offset })
+            return offset;
+
+        if (token is JValue { Value: DateTime dateTime })
+            return dateTime.Kind == DateTimeKind.Unspecified
+                ? new DateTimeOffset(dateTime, TimeSpan.Zero)   // no offset supplied: Debezium emits UTC
+                : new DateTimeOffset(dateTime.ToUniversalTime(), TimeSpan.Zero);
+
+        // Still a string, so Newtonsoft did not recognise it as a date. Parse culture-independently
+        // and treat a missing offset as UTC rather than as the server's local time.
+        return DateTimeOffset.TryParse(
+            token.Value<string>(),
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+            out var parsed)
+            ? parsed
+            : null;
     }
 }

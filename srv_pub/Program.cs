@@ -1,6 +1,7 @@
 using PacketShard.Kafka;
 using PacketShard.Outbox;
 using PacketShard.Outbox.Persistence;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -9,9 +10,14 @@ using Microsoft.Extensions.Logging;
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddKafkaPublish("");
-builder.Services.AddOutbox(); // runRelayJobs: true -> PublishOutboxJob + CleanupOutboxJob
+builder.Services.AddOutbox();
+
+var outboxConnStr = builder.Configuration.GetConnectionString("Outbox")
+                    ?? builder.Configuration["SqlConnStr"]
+                    ?? throw new ArgumentException("Set ConnectionStrings:Outbox (or SqlConnStr)");
+
 builder.Services.AddPersistence<ApplicationDbContext>(
-    builder.Configuration["SqlConnStr"] ?? throw new ArgumentException("SqlConnStr is required"),
+    outboxConnStr,
     retryOnFailure: true,
     maxRetryCount: 5);
 
@@ -22,7 +28,6 @@ await InitializeOutboxAsync(host);
 host.Run();
 return;
 
-// Ensure the outbox table + stored procedure exist before the relay starts polling.
 static async Task InitializeOutboxAsync(IHost host)
 {
     var logger = host.Services.GetRequiredService<ILogger<Program>>();

@@ -17,11 +17,14 @@ public sealed class OutboxInitializer(IUnitOfWork unitOfWork) : IOutboxInitializ
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
 
         var rawTransaction = transaction.GetDbTransaction();
-        var rawConnection = rawTransaction.Connection;
+
+        var rawConnection = rawTransaction.Connection
+            ?? throw new InvalidOperationException(
+                "The outbox transaction has no connection; cannot initialize the schema.");
 
         try
         {
-            await rawConnection!.ExecuteAsync(createTable, transaction: rawTransaction);
+            await rawConnection.ExecuteAsync(createTable, transaction: rawTransaction);
             await rawConnection.ExecuteAsync($"DROP PROCEDURE IF EXISTS {ReserveProcedureName}", transaction: rawTransaction);
             await rawConnection.ExecuteAsync(createProcedure, transaction: rawTransaction);
             await transaction.CommitAsync(cancellationToken);

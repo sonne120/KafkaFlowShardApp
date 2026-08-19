@@ -60,7 +60,8 @@ internal sealed class Outbox : IOutbox
         CancellationToken cancellationToken)
     {
         return await GetByQueryAsync(ReserveProcedureName, cancellationToken,
-            new { MaxLimit = top, ReservationSeconds = reservationTimeout.Seconds });
+        
+            new { MaxLimit = top, ReservationSeconds = (int)reservationTimeout.TotalSeconds });
     }
 
     public async Task MarkAsProcessedAsync(ImmutableArray<OutboxRecord> data, CancellationToken cancellationToken)

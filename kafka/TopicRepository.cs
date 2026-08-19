@@ -13,7 +13,7 @@ public class TopicRepository : ITopicRepository
         _configuration = configuration;
     }
 
-    public async Task TryCreateTopic(string topicName)
+    public async Task TryCreateTopic(string? topicName)
     {
         if (string.IsNullOrWhiteSpace(topicName))
             return;

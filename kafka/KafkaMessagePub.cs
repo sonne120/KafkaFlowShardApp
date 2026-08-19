@@ -15,6 +15,8 @@ public class KafkaMessagePub : IKafkaMessagePub
     private readonly ITopicRepository _topicRepository;
     private readonly IConfiguration _configuration;
     private readonly ProducerConfig _producerConfig;
+    private readonly SemaphoreSlim _topicsGate = new(1, 1);
+    private volatile bool _topicsCreated;
 
     public KafkaMessagePub(IConfiguration configuration,
                            ISerializer serializer,
@@ -37,18 +39,47 @@ public class KafkaMessagePub : IKafkaMessagePub
         };
 
         _producer = new ProducerBuilder<string, string>(_producerConfig).Build();
-        BeginProduction();
     }
 
-    private async Task BeginProduction()
+    /// <summary>
+    /// Create the configured topics once, on the first send rather than in the constructor.
+    ///
+    /// This used to be a fire-and-forget call from the constructor, which had two costs: a
+    /// failure surfaced only as an unobserved task exception, and the first batch could be
+    /// produced before the topics existed. Awaiting it here means a broker that is not up yet
+    /// fails the send, which rolls the outbox transaction back and leaves the rows pending for
+    /// the next tick — the retry the outbox exists to provide.
+    ///
+    /// The flag is set only on success, so a transient failure is retried on the next send
+    /// instead of being cached forever.
+    /// </summary>
+    private async Task EnsureTopicsAsync(CancellationToken cancellationToken)
     {
-        await _topicRepository.TryCreateTopic(_configuration["Topic"]);
-        await _topicRepository.TryCreateTopic(_configuration["RetryTopic"]);
-        await _topicRepository.TryCreateTopic(_configuration["DeadletterTopic"]);
+        if (_topicsCreated)
+            return;
+
+        await _topicsGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_topicsCreated)
+                return;
+
+            await _topicRepository.TryCreateTopic(_configuration["Topic"]);
+            await _topicRepository.TryCreateTopic(_configuration["RetryTopic"]);
+            await _topicRepository.TryCreateTopic(_configuration["DeadletterTopic"]);
+
+            _topicsCreated = true;
+        }
+        finally
+        {
+            _topicsGate.Release();
+        }
     }
 
-    public Task SendAsync(ImmutableArray<Message> messages, CancellationToken cancellationToken)
+    public async Task SendAsync(ImmutableArray<Message> messages, CancellationToken cancellationToken)
     {
+        await EnsureTopicsAsync(cancellationToken);
+
         foreach (var message in messages)
         {
             try
@@ -72,7 +103,6 @@ public class KafkaMessagePub : IKafkaMessagePub
         }
 
         _producer.Flush(cancellationToken);
-        return Task.CompletedTask;
     }
 
     private Headers PrepareHeaders(Dictionary<string, string>? metadata, DateTimeOffset messageTimestamp, string messageType)

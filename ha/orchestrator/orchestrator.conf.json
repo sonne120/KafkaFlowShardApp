@@ -1,0 +1,44 @@
+{
+  "Debug": false,
+  "ListenAddress": ":3000",
+
+  "BackendDB": "sqlite",
+  "SQLite3DataFile": "/var/lib/orchestrator/orchestrator.sqlite3",
+
+  "MySQLTopologyUser": "orch",
+  "MySQLTopologyPassword": "orchpass",
+  "MySQLConnectTimeoutSeconds": 2,
+
+  "InstancePollSeconds": 3,
+  "UnseenInstanceForgetHours": 240,
+  "HostnameResolveMethod": "none",
+  "MySQLHostnameResolveMethod": "@@hostname",
+
+  "DetectClusterAliasQuery": "SELECT 'packetshard-outbox'",
+  "ReplicationLagQuery": "",
+
+  "FailureDetectionPeriodBlockMinutes": 1,
+  "RecoveryPeriodBlockSeconds": 60,
+  "RecoveryIgnoreHostnameFilters": [],
+  "RecoverMasterClusterFilters": ["*"],
+  "RecoverIntermediateMasterClusterFilters": ["*"],
+
+  "ApplyMySQLPromotionAfterMasterFailover": true,
+  "PreventCrossDataCenterMasterFailover": false,
+  "FailMasterPromotionOnLagMinutes": 1,
+  "DelayMasterPromotionIfSQLThreadNotUpToDate": true,
+
+  "OnFailureDetectionProcesses": [
+    "echo 'DETECTED {failureType} on {failureCluster}: {failedHost}:{failedPort}' >> /tmp/recovery.log"
+  ],
+  "PreFailoverProcesses": [
+    "echo 'FAILOVER starting: {failureCluster} failed host {failedHost}' >> /tmp/recovery.log"
+  ],
+  "PostMasterFailoverProcesses": [
+    "echo 'PROMOTED {successorHost}:{successorPort} (was {failedHost})' >> /tmp/recovery.log",
+    "/hooks/fence-old-master.sh {failedHost} >> /tmp/recovery.log 2>&1"
+  ],
+  "PostUnsuccessfulFailoverProcesses": [
+    "echo 'FAILOVER FAILED for {failureCluster}' >> /tmp/recovery.log"
+  ]
+}

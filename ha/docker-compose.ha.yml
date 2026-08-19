@@ -1,0 +1,156 @@
+# ============================================================================
+# PacketShard HA layer: semi-sync MySQL (master + slave) + Orchestrator
+# failover + ProxySQL routing.
+#
+# Merge into the main docker-compose.yml (or run as an override):
+#   docker compose -f docker-compose.yml -f ha/docker-compose.ha.yml up -d --build
+#
+# App changes required (srv_ingest, srv_pub):
+#   ConnectionStrings:Outbox -> Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb
+#
+# Remove/disable the old single `mysql` service from the main compose file.
+# ============================================================================
+
+services:
+
+  # --------------------------------------------------------------------------
+  # Overrides for services defined in the MAIN compose file.
+  # Compose merges these on top of the originals — nothing to edit there.
+  # --------------------------------------------------------------------------
+
+  # Neutralize the old single-node mysql: a profile no service references means it never
+  # starts. Parking it is not sufficient on its own — Compose pulls a profiled service back
+  # in when an *active* service still depends_on it, which is why every app service below
+  # drops that dependency explicitly.
+  mysql:
+    profiles: ["disabled"]
+
+  # App services must wait until the writer is appointed, and must talk to ProxySQL.
+  #
+  # depends_on carries !override (Compose >= 2.24) because Compose MERGES mappings on
+  # override: without it the base file's `mysql: service_healthy` survives alongside
+  # ha-bootstrap and drags the disabled node back into the project.
+  #
+  # environment merges deliberately: the base file's SqlConnStr stays, and
+  # ConnectionStrings__Outbox wins because srv_ingest/srv_pub read
+  # Configuration.GetConnectionString("Outbox") first and fall back to SqlConnStr only if
+  # it is absent. That fallback is what makes commenting out COMPOSE_FILE in .env restore
+  # single-node mode with no code change.
+  #
+  # The base file declares three ingest replicas (srv_ingest-1..3) rather than one service,
+  # and YAML anchors do not cross files, so each replica is overridden by name.
+  srv_ingest-1: &ha-app
+    depends_on: !override
+      kafka:
+        condition: service_started
+      ha-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ConnectionStrings__Outbox: "Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb"
+
+  srv_ingest-2: *ha-app
+
+  srv_ingest-3: *ha-app
+
+  srv_pub: *ha-app
+
+  # --------------------------------------------------------------------------
+  # The HA layer itself
+  # --------------------------------------------------------------------------
+
+  mysql-master:
+    image: mysql:8.4
+    container_name: kafkaflowshard-mysql-master
+    command:
+      - --server-id=1
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: outboxdb
+    volumes:
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./mysql/master-init:/docker-entrypoint-initdb.d:ro
+      - mysql-master-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [default]
+
+  mysql-slave:
+    image: mysql:8.4
+    container_name: kafkaflowshard-mysql-slave
+    command:
+      - --server-id=2
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./mysql/slave-init:/docker-entrypoint-initdb.d:ro
+      - mysql-slave-data:/var/lib/mysql
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [default]
+
+  proxysql:
+    image: proxysql/proxysql:2.6.2
+    container_name: kafkaflowshard-proxysql
+    ports:
+      - "6033:6033"   # app traffic
+      - "6032:6032"   # admin (mysql protocol)
+    volumes:
+      - ./proxysql/proxysql.cnf:/etc/proxysql.cnf:ro
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+      mysql-slave:
+        condition: service_healthy
+    networks: [default]
+
+  orchestrator:
+    build:
+      context: ./orchestrator
+    container_name: kafkaflowshard-orchestrator
+    ports:
+      - "3000:3000"   # web UI + API
+    volumes:
+      - ./orchestrator/orchestrator.conf.json:/etc/orchestrator.conf.json:ro
+      - ./orchestrator/hooks:/hooks:ro
+      - orchestrator-data:/var/lib/orchestrator
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+      mysql-slave:
+        condition: service_healthy
+    networks: [default]
+
+  # One-shot: designates the initial writer and registers the topology.
+  # Runs once on a clean stack. `restart: "no"` is deliberate — after a
+  # master crash+restart NOBODY re-promotes it automatically; the node
+  # comes back super_read_only (see mysql/conf.d/replication.cnf).
+  ha-bootstrap:
+    image: mysql:8.4
+    container_name: kafkaflowshard-ha-bootstrap
+    entrypoint: ["bash", "/scripts/bootstrap.sh"]
+    volumes:
+      - ./scripts:/scripts:ro
+    depends_on:
+      mysql-master:
+        condition: service_healthy
+      mysql-slave:
+        condition: service_healthy
+      orchestrator:
+        condition: service_started
+    restart: "no"
+    networks: [default]
+
+volumes:
+  mysql-master-data:
+  mysql-slave-data:
+  orchestrator-data:
