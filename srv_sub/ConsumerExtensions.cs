@@ -1,6 +1,6 @@
 using Confluent.Kafka;
 
-namespace KafkaFlowShardApp.Sub;
+namespace PacketShard.Sub;
 
 public static class ConsumerExtensions
 {

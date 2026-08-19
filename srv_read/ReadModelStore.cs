@@ -1,7 +1,7 @@
 using Npgsql;
 using NpgsqlTypes;
 
-namespace KafkaFlowShardApp.Read;
+namespace PacketShard.Read;
 
 /// <summary>
 /// Postgres is the source of truth for "have we processed this transaction?". Both guards we

@@ -1,17 +1,17 @@
-name: kafkaflowshard
+name: packetshard
 
 services:
   # Kafka 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
-    container_name: kafkaflowshard-zookeeper
+    container_name: packetshard-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
 
   kafka:
     image: confluentinc/cp-kafka:7.6.1
-    container_name: kafkaflowshard-kafka
+    container_name: packetshard-kafka
     depends_on: [zookeeper]
     ports:
       # Host publish moved 9092 -> 9192 to avoid colliding with other local Kafka projects.
@@ -30,7 +30,7 @@ services:
   # MySQL (Outbox Pattern store for srv_pub)
   mysql:
     image: mysql:8.0
-    container_name: kafkaflowshard-mysql
+    container_name: packetshard-mysql
     ports:
       - "3306:3306"
     environment:
@@ -49,35 +49,35 @@ services:
   # Each runs as a single-node replica set (rs0) so Debezium can read its change stream.
   mongo-https:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-https
+    container_name: packetshard-mongo-https
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27018:27017" ]
     volumes: [ "mongo_https:/data/db" ]
 
   mongo-tcp:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-tcp
+    container_name: packetshard-mongo-tcp
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27019:27017" ]
     volumes: [ "mongo_tcp:/data/db" ]
 
   mongo-udp:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-udp
+    container_name: packetshard-mongo-udp
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27020:27017" ]
     volumes: [ "mongo_udp:/data/db" ]
 
   mongo-arp:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-arp
+    container_name: packetshard-mongo-arp
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27021:27017" ]
     volumes: [ "mongo_arp:/data/db" ]
 
   mongo-other:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-other
+    container_name: packetshard-mongo-other
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: [ "27022:27017" ]
     volumes: [ "mongo_other:/data/db" ]
@@ -85,7 +85,7 @@ services:
   # One-shot: promotes each mongod to a replica set (rs.initiate). Exits when done.
   mongo-init:
     image: mongo:7
-    container_name: kafkaflowshard-mongo-init
+    container_name: packetshard-mongo-init
     depends_on: [ mongo-https, mongo-tcp, mongo-udp, mongo-arp, mongo-other ]
     restart: "no"
     volumes:
@@ -97,7 +97,7 @@ services:
   # Kafka Connect with the Debezium MongoDB connector bundled.
   connect:
     image: debezium/connect:2.7.3.Final
-    container_name: kafkaflowshard-connect
+    container_name: packetshard-connect
     depends_on: [ kafka, mongo-init ]
     ports:
       - "8083:8083"
@@ -116,7 +116,7 @@ services:
   # registers the 5 Debezium connectors
   connect-init:
     image: curlimages/curl:8.10.1
-    container_name: kafkaflowshard-connect-init
+    container_name: packetshard-connect-init
     depends_on: [ connect ]
     restart: "no"
     volumes:
@@ -130,7 +130,7 @@ services:
     build:
       context: ./postgres
       dockerfile: Dockerfile
-    container_name: kafkaflowshard-postgres
+    container_name: packetshard-postgres
     ports:
       - "5432:5432"
     environment:
@@ -148,7 +148,7 @@ services:
   # Redis: fast-path dedup filter (AOF on for durability; PG is still the source of truth).
   redis:
     image: redis:7
-    container_name: kafkaflowshard-redis
+    container_name: packetshard-redis
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
@@ -160,7 +160,7 @@ services:
     build:
       context: .
       dockerfile: srv_read/Dockerfile
-    container_name: kafkaflowshard-srv-read
+    container_name: packetshard-srv-read
     depends_on:
       kafka:
         condition: service_started
@@ -184,7 +184,7 @@ services:
     build:
       context: .
       dockerfile: MasterNode/Dockerfile
-    container_name: kafkaflowshard-masternode
+    container_name: packetshard-masternode
     depends_on: [ mongo-https, mongo-tcp, mongo-udp, mongo-arp, mongo-other ]
     ports:
       - "8000:8000"
@@ -266,7 +266,7 @@ services:
     build:
       context: .
       dockerfile: LoadBalancer/Dockerfile
-    container_name: kafkaflowshard-loadbalancer
+    container_name: packetshard-loadbalancer
     depends_on: [ srv_ingest-1, srv_ingest-2, srv_ingest-3 ]
     ports:
       - "5001:5001"

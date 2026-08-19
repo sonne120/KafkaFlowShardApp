@@ -1,6 +1,6 @@
 using Confluent.Kafka;
 
-namespace KafkaFlowShardApp.Read;
+namespace PacketShard.Read;
 
 /// <summary>
 /// Consumes Debezium MongoDB change events (one topic per shard, matched by regex) and projects

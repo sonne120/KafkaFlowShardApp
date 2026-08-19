@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
-namespace KafkaFlowShardApp.Outbox.Persistence;
+namespace PacketShard.Outbox.Persistence;
 
 public class ApplicationDbContext : DbContext
 {

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 internal static class SqlQueriesReader
 {

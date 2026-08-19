@@ -1,7 +1,7 @@
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class PacketDocument
 {

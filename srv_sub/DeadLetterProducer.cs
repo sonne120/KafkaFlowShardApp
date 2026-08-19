@@ -4,7 +4,7 @@ using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace KafkaFlowShardApp.Sub;
+namespace PacketShard.Sub;
 
 public sealed class DeadLetterProducer : IDisposable
 {

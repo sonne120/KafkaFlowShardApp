@@ -4,8 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>KafkaFlowShardApp.LoadBalancer</RootNamespace>
-    <UserSecretsId>kafkaflowshard-loadbalancer</UserSecretsId>
+    <RootNamespace>PacketShard.LoadBalancer</RootNamespace>
+    <UserSecretsId>packetshard-loadbalancer</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

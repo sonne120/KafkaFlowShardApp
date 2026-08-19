@@ -1,6 +1,6 @@
 using StackExchange.Redis;
 
-namespace KafkaFlowShardApp.Read;
+namespace PacketShard.Read;
 
 /// <summary>
 /// Redis is a *fast-path filter*, never the source of truth. It shaves the obvious duplicates

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class AkkaHostedService : IHostedService
 {

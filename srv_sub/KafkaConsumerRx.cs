@@ -1,11 +1,11 @@
 using System.Reactive.Linq;
 using Confluent.Kafka;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace KafkaFlowShardApp.Sub;
+namespace PacketShard.Sub;
 
 public sealed class KafkaConsumerRx : BackgroundService
 {

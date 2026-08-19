@@ -322,7 +322,7 @@ Replica counts are set in `docker-compose.yml` via `deploy.replicas`.
 docker compose up -d --build            # replicas come from deploy.replicas
 docker compose ps                       # srv_pub-1..3, srv_sub-1..5
 # proof all 5 consumers are active (5 partitions across 5 CONSUMER-IDs, lag ~0):
-docker exec kafkaflowshard-kafka kafka-consumer-groups \
+docker exec packetshard-kafka kafka-consumer-groups \
   --bootstrap-server localhost:9092 --describe --group ConsumerGroup
 ```
 
@@ -352,10 +352,10 @@ to one of three outcomes:
 <summary><b>Watch the dead-letter topic fill</b> — commands</summary>
 
 ```
-docker exec kafkaflowshard-kafka kafka-topics --bootstrap-server localhost:9092 --list
+docker exec packetshard-kafka kafka-topics --bootstrap-server localhost:9092 --list
 # force rejections to see it fill: stop a shard so its writes fail
 docker compose stop mongo-arp
-docker exec -it kafkaflowshard-kafka kafka-console-consumer \
+docker exec -it packetshard-kafka kafka-console-consumer \
   --bootstrap-server localhost:9092 --topic deadletter --from-beginning
 ```
 
@@ -378,8 +378,8 @@ Redis, srv_read). Watch the logs: srv_pub publishes, srv_sub forwards, MasterNod
 Inspect what landed in a shard:
 
 ```
-docker exec -it kafkaflowshard-mongo-https mongosh --eval 'db.getSiblingDB("pcap").packets.find().limit(5)'
-docker exec -it kafkaflowshard-mongo-arp   mongosh --eval 'db.getSiblingDB("pcap").packets.countDocuments()'
+docker exec -it packetshard-mongo-https mongosh --eval 'db.getSiblingDB("pcap").packets.find().limit(5)'
+docker exec -it packetshard-mongo-arp   mongosh --eval 'db.getSiblingDB("pcap").packets.countDocuments()'
 ```
 
 <details>

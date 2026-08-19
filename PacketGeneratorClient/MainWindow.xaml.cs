@@ -1,8 +1,8 @@
 using System.Windows;
 using Grpc.Net.Client;
-using KafkaFlowShardApp.Ingest.Grpc;
+using PacketShard.Ingest.Grpc;
 
-namespace KafkaFlowShardApp.PacketGeneratorClient;
+namespace PacketShard.PacketGeneratorClient;
 
 public partial class MainWindow : Window
 {

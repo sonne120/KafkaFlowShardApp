@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using System.Data;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 internal sealed class Outbox : IOutbox
 {

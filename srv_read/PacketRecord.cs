@@ -1,6 +1,6 @@
 using Newtonsoft.Json.Linq;
 
-namespace KafkaFlowShardApp.Read;
+namespace PacketShard.Read;
 
 /// <summary>
 /// A read-model row parsed out of a Debezium MongoDB change event.

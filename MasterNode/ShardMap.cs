@@ -1,7 +1,7 @@
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 using Microsoft.Extensions.Configuration;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class ShardMap
 {

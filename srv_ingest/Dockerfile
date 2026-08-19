@@ -1,4 +1,4 @@
-# Build from the KafkaFlowShardApp/ directory: docker build -f srv_ingest/Dockerfile .
+# Build from the PacketShard/ directory: docker build -f srv_ingest/Dockerfile .
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 COPY Shared/Shared.csproj Shared/

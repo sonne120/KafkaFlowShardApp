@@ -2,7 +2,7 @@ using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 internal sealed class UnitOfWork(DbContext db) : IUnitOfWork
 {

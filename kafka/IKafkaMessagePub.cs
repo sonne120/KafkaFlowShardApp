@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 
-namespace KafkaFlowShardApp.Kafka;
+namespace PacketShard.Kafka;
 
 public interface IKafkaMessagePub
 {

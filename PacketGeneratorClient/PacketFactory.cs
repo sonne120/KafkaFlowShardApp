@@ -1,6 +1,6 @@
-using KafkaFlowShardApp.Ingest.Grpc;
+using PacketShard.Ingest.Grpc;
 
-namespace KafkaFlowShardApp.PacketGeneratorClient;
+namespace PacketShard.PacketGeneratorClient;
 
 /// <summary>
 /// Builds randomized packets to feed the ingest pipeline — the client-side mirror of the

@@ -1,10 +1,10 @@
 using System.Text;
 using Akka.Actor;
 using Akka.IO;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 using Newtonsoft.Json;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class ConnectionHandler : ReceiveActor
 {

@@ -1,10 +1,10 @@
 using System.Net.Sockets;
 using System.Text;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace KafkaFlowShardApp.Sub;
+namespace PacketShard.Sub;
 
 public sealed class TcpForwarder : IDisposable
 {

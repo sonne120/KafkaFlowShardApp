@@ -1,6 +1,6 @@
 using Newtonsoft.Json;
 
-namespace KafkaFlowShardApp.Shared;
+namespace PacketShard.Shared;
 
 public sealed class Serializer : ISerializer
 {

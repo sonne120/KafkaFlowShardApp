@@ -1,4 +1,4 @@
-namespace KafkaFlowShardApp.Kafka;
+namespace PacketShard.Kafka;
 
 public sealed class Message
 {

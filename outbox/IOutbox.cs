@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 public interface IOutbox
 {

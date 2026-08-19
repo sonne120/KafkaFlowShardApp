@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore.Storage;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 public interface IUnitOfWork
 {

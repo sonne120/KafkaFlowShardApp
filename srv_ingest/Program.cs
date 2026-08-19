@@ -1,7 +1,7 @@
-using KafkaFlowShardApp.Ingest.Services;
-using KafkaFlowShardApp.Kafka;
-using KafkaFlowShardApp.Outbox;
-using KafkaFlowShardApp.Outbox.Persistence;
+using PacketShard.Ingest.Services;
+using PacketShard.Kafka;
+using PacketShard.Outbox;
+using PacketShard.Outbox.Persistence;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);

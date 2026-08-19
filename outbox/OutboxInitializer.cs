@@ -1,7 +1,7 @@
 using Dapper;
 using Microsoft.EntityFrameworkCore.Storage;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 public sealed class OutboxInitializer(IUnitOfWork unitOfWork) : IOutboxInitializer
 {

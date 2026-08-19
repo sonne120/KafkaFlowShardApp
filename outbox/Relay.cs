@@ -1,7 +1,7 @@
-using KafkaFlowShardApp.Kafka;
+using PacketShard.Kafka;
 using System.Collections.Immutable;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 internal sealed class Relay : IRelay
 {

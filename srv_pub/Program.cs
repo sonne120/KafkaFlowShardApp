@@ -1,13 +1,11 @@
-using KafkaFlowShardApp.Kafka;
-using KafkaFlowShardApp.Outbox;
-using KafkaFlowShardApp.Outbox.Persistence;
+using PacketShard.Kafka;
+using PacketShard.Outbox;
+using PacketShard.Outbox.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-// srv_pub is the outbox RELAY: it owns the publish + cleanup jobs that drain the MySQL outbox
-// to Kafka. Packets are no longer generated here — they arrive over gRPC (srv_ingest), which
-// writes them to the outbox; this service publishes them.
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddKafkaPublish("");

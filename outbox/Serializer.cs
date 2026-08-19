@@ -1,6 +1,6 @@
 using Newtonsoft.Json;
 
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 internal sealed class Serializer : ISerializer
 {

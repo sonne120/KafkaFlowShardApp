@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace KafkaFlowShardApp.Shared;
+namespace PacketShard.Shared;
 
 public static class ApiKeyHasher
 {

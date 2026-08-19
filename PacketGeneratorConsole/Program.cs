@@ -1,5 +1,5 @@
 using Grpc.Net.Client;
-using KafkaFlowShardApp.Ingest.Grpc;
+using PacketShard.Ingest.Grpc;
 
 // Console packet generator — the cross-platform twin of the WPF client. Generates random
 // packets and streams them through the LoadBalancer over gRPC.

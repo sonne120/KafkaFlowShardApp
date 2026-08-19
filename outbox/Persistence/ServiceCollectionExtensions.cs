@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
 
-namespace KafkaFlowShardApp.Outbox.Persistence;
+namespace PacketShard.Outbox.Persistence;
 
 public static class ServiceCollectionExtensions
 {

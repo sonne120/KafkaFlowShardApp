@@ -1,4 +1,4 @@
-namespace KafkaFlowShardApp.Shared;
+namespace PacketShard.Shared;
 
 public sealed class PacketMessage
 {

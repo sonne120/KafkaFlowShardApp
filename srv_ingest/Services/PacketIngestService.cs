@@ -1,9 +1,9 @@
 using Grpc.Core;
-using KafkaFlowShardApp.Ingest.Grpc;
-using KafkaFlowShardApp.Outbox;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Ingest.Grpc;
+using PacketShard.Outbox;
+using PacketShard.Shared;
 
-namespace KafkaFlowShardApp.Ingest.Services;
+namespace PacketShard.Ingest.Services;
 
 
 public sealed class PacketIngestService : PacketIngest.PacketIngestBase

@@ -1,4 +1,4 @@
-namespace KafkaFlowShardApp.Outbox;
+namespace PacketShard.Outbox;
 
 public sealed class OutboxRecord
 {

@@ -1,9 +1,9 @@
 using Akka.Actor;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 using MongoDB.Driver;
 using Newtonsoft.Json;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class ShardWriterActor : ReceiveActor
 {

@@ -2,7 +2,7 @@ using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Configuration;
 
-namespace KafkaFlowShardApp.Kafka;
+namespace PacketShard.Kafka;
 
 public class TopicRepository : ITopicRepository
 {

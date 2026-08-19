@@ -1,6 +1,6 @@
 using System.Windows;
 
-namespace KafkaFlowShardApp.PacketGeneratorClient;
+namespace PacketShard.PacketGeneratorClient;
 
 public partial class App : Application
 {

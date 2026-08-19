@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option csharp_namespace = "KafkaFlowShardApp.Ingest.Grpc";
+option csharp_namespace = "PacketShard.Ingest.Grpc";
 
 package ingest;
 

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace KafkaFlowShardApp.Kafka;
+namespace PacketShard.Kafka;
 
 public static class ServiceExtensions
 {

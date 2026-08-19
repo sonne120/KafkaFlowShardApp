@@ -4,8 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>KafkaFlowShardApp.Sub</RootNamespace>
-    <UserSecretsId>kafkaflowshard-srv-sub</UserSecretsId>
+    <RootNamespace>PacketShard.Sub</RootNamespace>
+    <UserSecretsId>packetshard-srv-sub</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

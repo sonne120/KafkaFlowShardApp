@@ -1,5 +1,5 @@
-using KafkaFlowShardApp.Shared;
-using KafkaFlowShardApp.Sub;
+using PacketShard.Shared;
+using PacketShard.Sub;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 

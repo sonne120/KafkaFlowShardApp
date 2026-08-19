@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Collections.Immutable;
 using System.Text;
 
-namespace KafkaFlowShardApp.Kafka;
+namespace PacketShard.Kafka;
 
 public class KafkaMessagePub : IKafkaMessagePub
 {

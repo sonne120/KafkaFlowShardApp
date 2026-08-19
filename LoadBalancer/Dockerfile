@@ -1,4 +1,4 @@
-# Build from the KafkaFlowShardApp/ directory: docker build -f LoadBalancer/Dockerfile .
+# Build from the PacketShard/ directory: docker build -f LoadBalancer/Dockerfile .
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 COPY LoadBalancer/LoadBalancer.csproj LoadBalancer/

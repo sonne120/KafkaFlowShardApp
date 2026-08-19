@@ -1,7 +1,7 @@
 using Akka.Actor;
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class AuthActor : ReceiveActor
 {

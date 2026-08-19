@@ -1,6 +1,6 @@
-using KafkaFlowShardApp.Shared;
+using PacketShard.Shared;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed record WriteToShard(ProtocolType Protocol, string Json);
 

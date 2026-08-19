@@ -2,7 +2,7 @@ using System.Net;
 using Akka.Actor;
 using Akka.IO;
 
-namespace KafkaFlowShardApp.Master;
+namespace PacketShard.Master;
 
 public sealed class MainServerActor : ReceiveActor
 {
