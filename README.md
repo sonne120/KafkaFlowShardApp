@@ -180,6 +180,9 @@ insert to the Kafka commit**, so the offset moves only when the data is already 
 
 ## At-least-once delivery (offset commit after DB write)
 
+<details>
+<summary><b>How the guarantee is built</b> — a transactional outbox on the producer side, commit-after-write on the consumer</summary>
+
 Two mechanisms combine into an end-to-end at-least-once guarantee, one on each side of Kafka:
 
 **Producer side — transactional outbox.** `srv_ingest` never talks to Kafka directly. It writes
@@ -199,6 +202,8 @@ var processed = await _forwarder.SendAsync(envelope.Payload, stoppingToken);
 if (processed) _consumer.Commit(result);
 ```
 
+</details>
+
 <details>
 <summary><b>Failure analysis</b> — what happens when a component dies mid-flight</summary>
 
@@ -213,9 +218,14 @@ Every row above is an executable test rather than a claim — see [Tests](#tests
 
 </details>
 
+<details>
+<summary><b>Why duplicates are expected</b> — and why that makes the read side idempotent</summary>
+
 Duplicates are therefore possible by design — and that is exactly why the read side makes its
 projection idempotent (see
-[Correctness: at-least-once in, exactly-once projected](#correctness-at-least-once-in-exactly-once-projected)).
+[CQRS read side](#cqrs-read-side--cdc--postgres-pg_ivm--redis)).
+
+</details>
 
 ## Projects
 
@@ -274,6 +284,9 @@ All shards store into database `pcap`, collection `packets`.
 
 ## CQRS read side — CDC → Postgres (pg_ivm) + Redis
 
+<details>
+<summary><b>Why CDC</b> — the shards hold the post-routing truth</summary>
+
 The pipeline above is the write side. The read side adds an analytics/query model without touching
 it: Debezium captures what actually landed in the Mongo shards (post-routing truth) and streams it
 to a dedicated microservice that projects it into Postgres, where a pg_ivm incrementally
@@ -286,7 +299,10 @@ post-routing truth — what survived auth → filter → routing. Rejected and d
 never reach the shards, so reading the shards (via CDC) summarizes what was actually stored, not
 what was merely published.
 
-### Correctness: at-least-once in, exactly-once projected
+</details>
+
+<details>
+<summary><b>Correctness</b> — at-least-once in, exactly-once projected</summary>
 
 Kafka is at-least-once (by design — see
 [At-least-once delivery](#at-least-once-delivery-offset-commit-after-db-write)), so the projection
@@ -318,7 +334,12 @@ The per-protocol summary is a pg_ivm **IMMV** (`postgres/init.sql`): `count`/`mi
 commutative, so a trigger maintains them on every INSERT — no `REFRESH`, no query-time
 aggregation.
 
+</details>
+
 ## Scaling
+
+<details>
+<summary><b>How each stage scales</b> — coordination delegated to the datastore or to Kafka</summary>
 
 Every stateless stage scales horizontally; coordination is delegated to the datastore or to Kafka
 instead of app-level locks:
@@ -335,6 +356,8 @@ instead of app-level locks:
 
 Replica counts are set in `docker-compose.yml` via `deploy.replicas`.
 
+</details>
+
 <details>
 <summary><b>Verify the scaling</b> — commands</summary>
 
@@ -349,6 +372,9 @@ docker exec packetshard-kafka kafka-consumer-groups \
 </details>
 
 ## High availability (optional)
+
+<details>
+<summary><b>The overlay</b> — semi-sync MySQL + Orchestrator + ProxySQL, switched in one line of .env</summary>
 
 The single `mysql` service is the write path's one hard dependency: if it is down, `srv_ingest`
 cannot accept a packet at all, because the outbox insert *is* the durability guarantee. `ha/`
@@ -389,7 +415,10 @@ The overlay makes three couplings so the base file stays untouched:
 |`orchestrator`|topology detection, promotion, re-parenting; web UI + API            |3000|
 |`ha-bootstrap`|one-shot: appoints the initial writer, registers the topology         |—   |
 
-### Data flow through a failover
+</details>
+
+<details>
+<summary><b>Data flow through a failover</b> — what happens to in-flight packets when the primary dies</summary>
 
 Steady state — every app connection goes to ProxySQL, which keeps exactly one node in the writer
 hostgroup and decides which by polling `super_read_only`:
@@ -457,7 +486,12 @@ Writability is a **runtime** appointment (`SET GLOBAL`, never `SET PERSIST`): an
 restarts comes back read-only, which is the split-brain failsafe. Details and failover drills are
 in `ha/README-HA.md`.
 
+</details>
+
 ## Retries & dead-letter
+
+<details>
+<summary><b>Three outcomes</b> — commit, retry, or quarantine</summary>
 
 `srv_sub` creates the `5sdelay` (retry) and `deadletter` topics **in code** at startup
 (`DeadLetterProducer.EnsureTopicsAsync`, same as the main topic). Each consumed message resolves
@@ -477,6 +511,8 @@ to one of three outcomes:
   failure (rewind and wait — the packet is still good), while an explicit rejection is a
   *processing* failure (count it, and quarantine the packet after 3 strikes).
 
+</details>
+
 <details>
 <summary><b>Watch the dead-letter topic fill</b> — commands</summary>
 
@@ -492,7 +528,8 @@ docker exec -it packetshard-kafka kafka-console-consumer \
 
 ## Run it
 
-### Option A — everything in Docker (recommended)
+<details>
+<summary><b>Option A</b> — everything in Docker (recommended)</summary>
 
 ```
 cd PacketShard
@@ -514,6 +551,8 @@ Inspect what landed in a shard:
 docker exec -it packetshard-mongo-https mongosh --eval 'db.getSiblingDB("pcap").packets.find().limit(5)'
 docker exec -it packetshard-mongo-arp   mongosh --eval 'db.getSiblingDB("pcap").packets.countDocuments()'
 ```
+
+</details>
 
 <details>
 <summary><b>Option B</b> — infra in Docker, apps on the host</summary>
@@ -537,6 +576,9 @@ dotnet run --project srv_pub
 </details>
 
 ## Tests
+
+<details>
+<summary><b>Two lanes</b> — 142 tests split by cost, not by layer</summary>
 
 `PacketShard.Tests` covers the pipeline in two lanes. The split is by **cost**, not by layer — the
 unit lane runs anywhere in a few seconds, the infrastructure lane starts real databases via
@@ -567,7 +609,10 @@ test forgets its tag, and the wrong choice if you want only what is known to be 
 CI runs the two lanes as separate jobs (`.github/workflows/ci.yml`), so a broken branch is
 reported by the fast one without waiting on Docker.
 
-### Why parts of it need real databases
+</details>
+
+<details>
+<summary><b>Why parts of it need real databases</b> — the guarantees live in the engine, not the C#</summary>
 
 Most of the guarantees this README claims are enforced by the database, not by the C#:
 `ON CONFLICT (transaction_id) DO NOTHING`, `WHERE EXCLUDED.version > client_state.version`,
@@ -584,14 +629,20 @@ pass while the system was broken, so they run against the real engines:
   the Redis marker is deliberately never set, and the redelivery must be absorbed by Postgres
   dedup rather than double-counted.
 
-### The MasterNode needs no containers
+</details>
+
+<details>
+<summary><b>The MasterNode needs no containers</b> — TestProbes in place of the five Mongo writers</summary>
 
 The routing stage takes its shard `Props` as a constructor argument, so the five MongoDB writers
 can be swapped for `TestProbe`s: a packet with `proto: "UDP"` is asserted to reach the UDP probe
 **and no other**. The auth gate is tested the same way — an invalid API key must produce
 `"Invalid API Key"`, close the connection, and route nothing.
 
-### Failure paths are tested as first-class behaviour
+</details>
+
+<details>
+<summary><b>Failure paths</b> — tested as first-class behaviour, not an afterthought</summary>
 
 A test suite that only covers success would miss the point of a durable pipeline. The suite pins
 the unhappy paths too: a failing Kafka publish rolls the outbox transaction back and leaves the
@@ -599,7 +650,12 @@ row pending for the next tick; a failing Postgres write leaves no Redis marker b
 abandoned reservation returns to the pool when it expires; a malformed CDC value is skipped rather
 than crashing the consumer.
 
+</details>
+
 ## Live pipeline
+
+<details>
+<summary><b>Live pipeline</b> — interleaved logs from srv_pub, srv_sub and masternode</summary>
 
 [![PacketShard live logs](https://github.com/sonne120/PacketShard/raw/main/assets/terminal.png)](/sonne120/PacketShard/blob/main/assets/terminal.png)
 
@@ -607,3 +663,5 @@ Interleaved output of `docker compose logs -f srv_pub srv_sub masternode`: the f
 replicas (`srv_sub-1..5`) each forward packets and get `MasterNode response: Ok`, while
 `masternode` routes them to the protocol shards — `[shard:Other] saved DNS …`,
 `[shard:Arp] saved ARP …`, etc.
+
+</details>
