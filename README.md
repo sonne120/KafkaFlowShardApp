@@ -1,6 +1,7 @@
 # PacketShard
 
-> **PacketShard — protocol-sharded packet pipeline: Kafka + outbox, Akka.NET routing, at-least-once delivery (offset commit after DB write), CQRS reads (Redis, Postgres + pg_ivm).**
+> **PacketShard — protocol-sharded packet pipeline: Kafka + outbox, Akka.NET routing, at-least-once delivery (offset commit after DB write).
+Read side: Debezium CDC streams shard writes back through Kafka into an idempotent Postgres projection (pg_ivm live stats), with Redis fast-path dedup — at-least-once in, exactly-once projected.**
 
 Microservice pipeline: packets enter over **gRPC through a load balancer**, flow through a
 **MySQL outbox → Kafka → Akka.NET MasterNode → 5 MongoDB shards** write path, and are projected by
