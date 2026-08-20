@@ -11,3 +11,11 @@
 
 # OS
 .DS_Store
+
+# Terraform (the lock file is NOT ignored — commit it once you have one)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+crash.log

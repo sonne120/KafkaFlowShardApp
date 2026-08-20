@@ -537,6 +537,10 @@ Postgres/pg_ivm, with API Gateway fronting `GET /stats/*` over a VPC Link. Rough
 about $8–9 a day, and a clean `terraform destroy`. Full instructions in
 [`aws/README-AWS.md`](aws/README-AWS.md).
 
+`.github/workflows/deploy-aws.yml` is the delivery half: on a push to `main` it builds the seven
+images, pushes them to ECR and rolls the services, authenticating through GitHub OIDC so there is
+no access key in the repo. It never runs Terraform — infrastructure stays a deliberate `apply`.
+
 It is a **hybrid-demo profile** on purpose: only the outbox uses a managed service (RDS MySQL);
 Kafka, Postgres, Mongo and Redis stay as containers so the project's own images and guarantees —
 pg_ivm, `rs0` change streams, the partition count — are the ones actually deployed. `README-AWS.md`

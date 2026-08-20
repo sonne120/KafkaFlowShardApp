@@ -27,3 +27,8 @@ output "connect_init_command" {
   description = "Run once after the stack is green to register the 5 Debezium connectors"
   value       = module.services.connect_init_command
 }
+
+output "github_actions_role_arn" {
+  description = "Set as the AWS_ROLE_ARN repo secret so .github/workflows/deploy-aws.yml can deploy. Empty unless github_repo is set."
+  value       = try(aws_iam_role.github_actions[0].arn, "")
+}

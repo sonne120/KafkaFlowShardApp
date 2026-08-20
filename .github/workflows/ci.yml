@@ -106,6 +106,29 @@ jobs:
           name: integration-test-results
           path: TestResults/
 
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      # -check fails on unformatted files rather than rewriting them, so drift is visible in CI
+      # instead of arriving as noise in someone's next diff.
+      - name: Formatted
+        run: terraform -chdir=aws/terraform fmt -recursive -check -diff
+
+      # -backend=false skips the S3 backend (there are no credentials here) but still fetches
+      # provider schemas, which is what makes validate more than a syntax check.
+      - name: Valid
+        run: |
+          terraform -chdir=aws/terraform init -backend=false -input=false
+          terraform -chdir=aws/terraform validate
+
   compose:
     name: Compose topologies resolve
     runs-on: ubuntu-latest

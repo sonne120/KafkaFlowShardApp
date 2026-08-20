@@ -145,6 +145,58 @@ terraform destroy
 Demo-profiled for clean destroy: no snapshots, zero-recovery secrets,
 `force_delete` ECR, ephemeral shard storage.
 
+## Continuous delivery
+
+`.github/workflows/deploy-aws.yml` builds the seven images, pushes them to ECR and rolls the
+services on every push to `main` that touches application code.
+
+It deliberately **does not run Terraform**. Infrastructure stays a considered `terraform apply`,
+because a pipeline that can silently replace an RDS instance is not one you want firing on a merge.
+The workflow only moves code.
+
+### Setup — one secret, no long-lived keys
+
+```bash
+cd terraform
+terraform apply -var 'github_repo=owner/PacketShard'
+terraform output -raw github_actions_role_arn
+```
+
+Put that ARN in the repo as the secret **`AWS_ROLE_ARN`**. GitHub then mints a short-lived token per
+run and trades it for the role — there is no access key in the repo to leak or rotate. The trust
+policy pins both the repo and the branch (`github_deploy_refs`, `refs/heads/main` by default), which
+is the entire security boundary: without it any repo on GitHub could assume the role.
+
+If the account already has a GitHub OIDC provider — you only get one — add
+`-var 'create_github_oidc_provider=false'` and the role attaches to the existing one.
+
+Two optional repository *variables* override the defaults: `AWS_REGION` (`eu-central-1`) and
+`AWS_PROJECT` (`packetshard`, the Terraform `project` prefix).
+
+Without `AWS_ROLE_ARN` the workflow skips cleanly rather than failing, so forks stay green.
+
+### What a run does
+
+Images are pushed twice — `:latest`, which is what the task definitions reference and therefore what
+a rollout picks up, and `:<git-sha>`, which is how you tell later which commit is actually running.
+Then each stateless service gets `update-service --force-new-deployment`, and the run waits on
+`ecs wait services-stable`, so a crash-looping task fails the deploy instead of going green while
+ECS quietly rolls back.
+
+`postgres` is **not** rolled automatically. It is stateful, and restarting it drops every read-model
+connection; its EFS data survives either way. Run the workflow manually with `redeploy_postgres`
+checked when its image actually changed.
+
+The role can push to ECR and restart services — nothing more. Rolling a service reuses its existing
+task definition, so the role needs neither `RegisterTaskDefinition` nor `PassRole`: it cannot change
+*what* a task runs as, only restart it.
+
+### First deployment
+
+CD needs the ECR repos to exist, so the very first push still goes through
+[step 2](#2-build-and-push-the-7-images) by hand — or just `terraform apply` first and let the next
+merge to `main` do the pushing.
+
 ## Cost (demo profile, eu-central-1, approximate)
 
 ~17 Fargate tasks ≈ $170–200/mo, NAT ≈ $37, NLB ≈ $20, RDS db.t4g.micro ≈ $15,
@@ -173,9 +225,9 @@ costs about as much as a coffee.
   SnapshotTopic's partition count (the app also creates topics explicitly via
   TopicRepository).
 - **Known limits**: single-AZ NAT; single broker; Mongo on ephemeral storage;
-  plaintext inside the VPC; `terraform validate`/`apply` still not run (no
-  provider registry access here either) — expect at most attribute-level fixes
-  on first `init`.
+  plaintext inside the VPC. `terraform fmt`/`validate` now run in CI and pass;
+  `terraform apply` has still never been run against a real account, so expect
+  attribute-level fixes on the first one.
 
 ## Managed upgrade path (when you want the resume keywords)
 
