@@ -1,0 +1,174 @@
+
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "LoadBalancer/**"
+      - "MasterNode/**"
+      - "srv_ingest/**"
+      - "srv_pub/**"
+      - "srv_read/**"
+      - "srv_sub/**"
+      - "Shared/**"
+      - "kafka/**"
+      - "outbox/**"
+      - "discovery/**"
+      - "protos/**"
+      - "postgres/**"
+      - ".github/workflows/deploy-aws.yml"
+  workflow_dispatch:
+    inputs:
+      redeploy_postgres:
+        description: "Also roll the postgres service (restarts the read model; EFS data survives)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # required to mint the OIDC token
+
+jobs:
+
+  preflight:
+    name: Is this account wired up?
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+      region: ${{ steps.check.outputs.region }}
+      project: ${{ steps.check.outputs.project }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.AWS_ROLE_ARN }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS_ROLE_ARN is not set — skipping deployment."
+          fi
+          echo "region=${{ vars.AWS_REGION || 'eu-central-1' }}" >> "$GITHUB_OUTPUT"
+          echo "project=${{ vars.AWS_PROJECT || 'packetshard' }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: preflight
+    if: needs.preflight.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: yarp,       dockerfile: LoadBalancer/Dockerfile, context: . }
+          - { name: srv-ingest, dockerfile: srv_ingest/Dockerfile,   context: . }
+          - { name: srv-pub,    dockerfile: srv_pub/Dockerfile,      context: . }
+          - { name: srv-sub,    dockerfile: srv_sub/Dockerfile,      context: . }
+          - { name: masternode, dockerfile: MasterNode/Dockerfile,   context: . }
+          - { name: srv-read,   dockerfile: srv_read/Dockerfile,     context: . }
+          - { name: postgres,   dockerfile: postgres/Dockerfile,     context: ./postgres }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ needs.preflight.outputs.region }}
+          role-session-name: packetshard-deploy-${{ github.run_id }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ needs.preflight.outputs.project }}/${{ matrix.name }}:latest
+            ${{ steps.ecr.outputs.registry }}/${{ needs.preflight.outputs.project }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  deploy:
+    name: Roll the services
+    needs: [preflight, build]
+    if: needs.preflight.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLUSTER: ${{ needs.preflight.outputs.project }}
+      PROJECT: ${{ needs.preflight.outputs.project }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ needs.preflight.outputs.region }}
+          role-session-name: packetshard-deploy-${{ github.run_id }}
+
+      - name: Work out which services to roll
+        run: |
+          set -euo pipefail
+          SERVICES="yarp srv-ingest srv-pub srv-sub masternode srv-read"
+
+          # postgres is stateful: rolling it drops every read-model connection, so it only moves
+          # when someone asks. Its data lives on EFS and survives either way.
+          if [ "${{ inputs.redeploy_postgres }}" = "true" ]; then
+            SERVICES="$SERVICES postgres"
+          fi
+
+          # Carry the prefixed names forward as one string; later steps read them into an array.
+          PREFIXED=""
+          for svc in $SERVICES; do PREFIXED="$PREFIXED $PROJECT-$svc"; done
+          echo "TARGETS=${PREFIXED# }" >> "$GITHUB_ENV"
+
+      - name: Force a new deployment
+        run: |
+          set -euo pipefail
+          read -ra targets <<< "$TARGETS"
+          for svc in "${targets[@]}"; do
+            echo "::group::$svc"
+            aws ecs update-service \
+              --cluster "$CLUSTER" \
+              --service "$svc" \
+              --force-new-deployment \
+              --query 'service.{name:serviceName,desired:desiredCount,taskDef:taskDefinition}' \
+              --output table
+            echo "::endgroup::"
+          done
+
+      - name: Wait for the rollout to settle
+        run: |
+          set -euo pipefail
+          read -ra targets <<< "$TARGETS"
+          # Polls until running == desired with no deployment in flight, and exits non-zero on
+          # timeout — which is how a crash-looping task shows up as a failed deploy rather than a
+          # green one.
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "${targets[@]}"
+
+      - name: Report what is running
+        if: always()
+        run: |
+          set -euo pipefail
+          # always() means this can run after an early failure, before TARGETS was ever set.
+          [ -n "${TARGETS:-}" ] || { echo "No services were rolled." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          read -ra targets <<< "$TARGETS"
+          {
+            echo "### Deployed \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo "| service | desired | running | task definition |"
+            echo "|---|---|---|---|"
+            aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "${targets[@]}" \
+              --query 'services[].[serviceName,desiredCount,runningCount,taskDefinition]' \
+              --output text \
+              | awk -F'\t' '{n=split($4,a,"/"); print "| "$1" | "$2" | "$3" | "a[n]" |"}'
+          } >> "$GITHUB_STEP_SUMMARY"
