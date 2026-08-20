@@ -1,4 +1,5 @@
 using PacketShard.Read;
+using PacketShard.ServiceDiscovery;
 using Npgsql;
 using StackExchange.Redis;
 
@@ -17,6 +18,10 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<ReadModelStore>();
 builder.Services.AddSingleton<ProjectionHandler>();
 builder.Services.AddHostedService<CdcConsumer>();
+
+// Advertises the read API to Consul so the gateway's read-cluster finds it by name. The /health
+// endpoint below is what the agent probes.
+builder.Services.AddServiceRegistration(builder.Configuration);
 
 var app = builder.Build();
 

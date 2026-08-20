@@ -4,6 +4,8 @@ using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using PacketShard.ServiceDiscovery;
 using PacketShard.Shared;
 using PacketShard.Sub;
 using Xunit;
@@ -63,6 +65,7 @@ public sealed class TcpForwarderTests
     {
         using var forwarder = new TcpForwarder(
             Config(host: "127.0.0.1", port: UnusedPort(), apiKey: "valid_api_key_1"),
+            Directory(),
             NullLogger<TcpForwarder>.Instance);
 
         Assert.Null(await forwarder.SendAsync("{}", default));
@@ -83,17 +86,55 @@ public sealed class TcpForwarderTests
         Assert.False(forwarder.IsConnected);
     }
 
+    [Fact]
+    public async Task A_service_name_is_dialled_from_the_directory_not_from_MasterNode_Host()
+    {
+        using var server = new FakeMasterNode("API Key authenticated.", "Ok");
+
+        // Host/Port deliberately point nowhere: reaching the server proves the endpoint came from
+        // the directory rather than from the static configuration.
+        using var forwarder = new TcpForwarder(
+            Config("no-such-host", UnusedPort(), "valid_api_key_1", service: "masternode"),
+            Directory(("masternode", $"tcp://127.0.0.1:{server.Port}")),
+            NullLogger<TcpForwarder>.Instance);
+
+        Assert.True(await forwarder.SendAsync("""{"proto":"UDP"}""", default));
+    }
+
+    [Fact]
+    public async Task A_service_with_no_healthy_instance_reports_null_not_false()
+    {
+        // null means "could not deliver", which leaves the Kafka offset uncommitted; false would
+        // spend one of the packet's delivery attempts on an outage that is not its fault.
+        using var forwarder = new TcpForwarder(
+            Config("127.0.0.1", UnusedPort(), "valid_api_key_1", service: "masternode"),
+            Directory(),
+            NullLogger<TcpForwarder>.Instance);
+
+        Assert.Null(await forwarder.SendAsync("{}", default));
+    }
+
     //helpers
     private static TcpForwarder Create(FakeMasterNode server, string apiKey = "valid_api_key_1") =>
-        new(Config("127.0.0.1", server.Port, apiKey), NullLogger<TcpForwarder>.Instance);
+        new(Config("127.0.0.1", server.Port, apiKey), Directory(), NullLogger<TcpForwarder>.Instance);
 
-    private static IConfiguration Config(string host, int port, string apiKey) =>
+    private static IConfiguration Config(string host, int port, string apiKey, string service = "") =>
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["MasterNode:Host"] = host,
             ["MasterNode:Port"] = port.ToString(),
+            ["MasterNode:Service"] = service,
             ["apiKey"] = apiKey
         }).Build();
+
+    private static IServiceDirectory Directory(params (string Service, string Addresses)[] services)
+    {
+        var options = new ConsulOptions();
+        foreach (var (service, addresses) in services)
+            options.Fallback[service] = addresses;
+
+        return new StaticServiceDirectory(Options.Create(options), NullLogger<StaticServiceDirectory>.Instance);
+    }
 
     private static int UnusedPort()
     {

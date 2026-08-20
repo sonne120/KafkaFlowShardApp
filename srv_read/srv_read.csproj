@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Shared\Shared.csproj" />
+    <ProjectReference Include="..\consul\consul.csproj" />
   </ItemGroup>
 
 </Project>

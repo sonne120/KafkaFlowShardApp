@@ -121,6 +121,51 @@ jobs:
           jq -e '.services | has("mysql")' single.json > /dev/null
           jq -e '.services.srv_pub.depends_on | has("mysql")' single.json > /dev/null
 
+      - name: Service discovery is wired into both topologies
+        run: |
+          for file in "docker-compose.yml" "docker-compose.yml:ha/docker-compose.ha.yml"; do
+            COMPOSE_FILE="$file" docker compose config --format json > discovery.json
+
+            jq -e '.services | has("consul")' discovery.json > /dev/null
+
+            # Every service that registers or looks up must have discovery switched on...
+            for svc in srv_ingest-1 srv_ingest-2 srv_ingest-3 srv_read masternode loadbalancer srv_sub; do
+              jq -e --arg s "$svc" '.services[$s].environment.Consul__Enabled == "true"' discovery.json > /dev/null
+            done
+
+            # ...and each ingest replica must land on its own catalog entry. The address is the
+            # container IP, which is distinct by construction; the fixed hostname is what keeps
+            # the service id distinct, readable and stable, so assert that instead.
+            jq -e '[.services["srv_ingest-1","srv_ingest-2","srv_ingest-3"].environment.Consul__Service__UseIpAddress]
+                   | all(. == "true")' discovery.json > /dev/null
+            jq -e '[.services["srv_ingest-1","srv_ingest-2","srv_ingest-3"].hostname]
+                   | (unique | length) == 3' discovery.json > /dev/null
+
+            # The gRPC port is HTTP/2-only, so Consul's HTTP/1.1 check needs its own listener.
+            jq -e '.services["srv_ingest-1"].environment.HealthPort == "8081"' discovery.json > /dev/null
+
+            # The HA overlay replaces depends_on wholesale (!override); the consul edge has to
+            # survive that, or the replicas can start before there is an agent to register with.
+            for svc in srv_ingest-1 srv_ingest-2 srv_ingest-3; do
+              jq -e --arg s "$svc" '.services[$s].depends_on | has("consul")' discovery.json > /dev/null
+            done
+          done
+
+      - name: The gateway resolves its destinations by service name
+        env:
+          COMPOSE_FILE: docker-compose.yml
+        run: |
+          # A hostname creeping back into a Destinations entry silently un-does discovery: the
+          # gateway would keep working and quietly stop noticing replicas.
+          jq -e '[.ReverseProxy.Clusters[].Destinations[].Address] | all(startswith("consul://"))' \
+            LoadBalancer/appsettings.json > /dev/null
+
+          # Every discovered name needs a fallback, since Consul:Enabled=false resolves from there.
+          jq -e '. as $root
+                 | [$root.ReverseProxy.Clusters[].Destinations[].Address | ltrimstr("consul://")] as $names
+                 | ($names - ($root.Consul.Fallback | keys)) == []' \
+            LoadBalancer/appsettings.json > /dev/null
+
       - name: HA topology
         env:
           COMPOSE_FILE: docker-compose.yml:ha/docker-compose.ha.yml

@@ -42,7 +42,28 @@ services:
   #
   # The base file declares three ingest replicas (srv_ingest-1..3) rather than one service,
   # and YAML anchors do not cross files, so each replica is overridden by name.
-  srv_ingest-1: &ha-app
+  #
+  # Consul is untouched by this file: the registration env lives in the base file and survives
+  # the merge, so the catalog looks the same in both topologies.
+  # !override drops the base file's consul edge along with the mysql one, so the ingest replicas
+  # re-declare it: they register themselves in the catalog and the gateway resolves them from it.
+  # srv_pub does not — it is a relay with no endpoint to advertise and nothing to look up.
+  srv_ingest-1: &ha-ingest
+    depends_on: !override
+      kafka:
+        condition: service_started
+      consul:
+        condition: service_healthy
+      ha-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ConnectionStrings__Outbox: "Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb;SslMode=None;AllowPublicKeyRetrieval=true"
+
+  srv_ingest-2: *ha-ingest
+
+  srv_ingest-3: *ha-ingest
+
+  srv_pub:
     depends_on: !override
       kafka:
         condition: service_started
@@ -50,12 +71,6 @@ services:
         condition: service_completed_successfully
     environment:
       ConnectionStrings__Outbox: "Server=proxysql;Port=6033;User=app;Password=apppass;Database=outboxdb;SslMode=None;AllowPublicKeyRetrieval=true"
-
-  srv_ingest-2: *ha-app
-
-  srv_ingest-3: *ha-app
-
-  srv_pub: *ha-app
 
   # --------------------------------------------------------------------------
   # The HA layer itself
