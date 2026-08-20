@@ -130,13 +130,13 @@ jobs:
 
             # Every service that registers or looks up must have discovery switched on...
             for svc in srv_ingest-1 srv_ingest-2 srv_ingest-3 srv_read masternode loadbalancer srv_sub; do
-              jq -e --arg s "$svc" '.services[$s].environment.Consul__Enabled == "true"' discovery.json > /dev/null
+              jq -e --arg s "$svc" '.services[$s].environment.Discovery__Provider == "Consul"' discovery.json > /dev/null
             done
 
             # ...and each ingest replica must land on its own catalog entry. The address is the
             # container IP, which is distinct by construction; the fixed hostname is what keeps
             # the service id distinct, readable and stable, so assert that instead.
-            jq -e '[.services["srv_ingest-1","srv_ingest-2","srv_ingest-3"].environment.Consul__Service__UseIpAddress]
+            jq -e '[.services["srv_ingest-1","srv_ingest-2","srv_ingest-3"].environment.Discovery__Service__UseIpAddress]
                    | all(. == "true")' discovery.json > /dev/null
             jq -e '[.services["srv_ingest-1","srv_ingest-2","srv_ingest-3"].hostname]
                    | (unique | length) == 3' discovery.json > /dev/null
@@ -157,13 +157,19 @@ jobs:
         run: |
           # A hostname creeping back into a Destinations entry silently un-does discovery: the
           # gateway would keep working and quietly stop noticing replicas.
-          jq -e '[.ReverseProxy.Clusters[].Destinations[].Address] | all(startswith("consul://"))' \
+          jq -e '[.ReverseProxy.Clusters[].Destinations[].Address] | all(startswith("discover://"))' \
             LoadBalancer/appsettings.json > /dev/null
 
-          # Every discovered name needs a fallback, since Consul:Enabled=false resolves from there.
+          # Each sentinel must carry a port: a DNS-backed provider has no other way to learn one.
+          jq -e '[.ReverseProxy.Clusters[].Destinations[].Address]
+                 | all(test("^discover://[^:/]+:[0-9]+$"))' \
+            LoadBalancer/appsettings.json > /dev/null
+
+          # Every discovered name needs a fallback entry, since Provider=Static resolves from there.
           jq -e '. as $root
-                 | [$root.ReverseProxy.Clusters[].Destinations[].Address | ltrimstr("consul://")] as $names
-                 | ($names - ($root.Consul.Fallback | keys)) == []' \
+                 | [$root.ReverseProxy.Clusters[].Destinations[].Address
+                    | ltrimstr("discover://") | split(":")[0]] as $names
+                 | ($names - ($root.Discovery.Fallback | keys)) == []' \
             LoadBalancer/appsettings.json > /dev/null
 
       - name: HA topology

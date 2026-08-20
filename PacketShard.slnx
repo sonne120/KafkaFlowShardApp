@@ -1,5 +1,5 @@
 <Solution>
-  <Project Path="consul/consul.csproj" />
+  <Project Path="discovery/discovery.csproj" />
   <Project Path="kafka/kafka.csproj" />
   <Project Path="LoadBalancer/LoadBalancer.csproj" />
   <Project Path="MasterNode/MasterNode.csproj" />

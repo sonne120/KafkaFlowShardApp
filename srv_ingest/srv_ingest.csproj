@@ -20,7 +20,7 @@
     <ProjectReference Include="..\Shared\Shared.csproj" />
     <ProjectReference Include="..\kafka\kafka.csproj" />
     <ProjectReference Include="..\outbox\outbox.csproj" />
-    <ProjectReference Include="..\consul\consul.csproj" />
+    <ProjectReference Include="..\discovery\discovery.csproj" />
   </ItemGroup>
 
 </Project>

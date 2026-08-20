@@ -30,7 +30,7 @@
     <ProjectReference Include="..\outbox\outbox.csproj" />
     <ProjectReference Include="..\srv_sub\srv_sub.csproj" />
     <ProjectReference Include="..\srv_ingest\srv_ingest.csproj" />
-    <ProjectReference Include="..\consul\consul.csproj" />
+    <ProjectReference Include="..\discovery\discovery.csproj" />
     <ProjectReference Include="..\LoadBalancer\LoadBalancer.csproj" />
   </ItemGroup>
 

@@ -22,7 +22,8 @@ shard, and the read-side projection turns at-least-once input into an **exactly-
 [Projects](#projects) ·
 [CQRS read side](#cqrs-read-side--cdc--postgres-pg_ivm--redis) ·
 [Scaling](#scaling) ·
-[Service discovery](#service-discovery-consul) ·
+[Service discovery](#service-discovery) ·
+[AWS](#aws-optional) ·
 [High availability](#high-availability-optional) ·
 [Retries & dead-letter](#retries--dead-letter) ·
 [Run it](#run-it) ·
@@ -123,7 +124,7 @@ Key stages:
   round-robins them across `srv_ingest` instances. Each instance writes the packet to the MySQL
   outbox inside a transaction — durable before the client call returns. The gateway learns which
   instances exist from Consul rather than from a list it has to be told about (see
-  [Service discovery](#service-discovery-consul)).
+  [Service discovery](#service-discovery)).
 - **Outbox relay**: `srv_pub` polls the outbox with `FOR UPDATE SKIP LOCKED` and publishes to
   Kafka, eliminating the dual-write problem: nothing is lost if Kafka is down.
 - **Akka.NET routing**: the MasterNode is an Akka.NET actor system that authenticates, filters by
@@ -287,8 +288,8 @@ projection idempotent (see
   test packets and stream them into the system.
 - **`LoadBalancer`**: YARP-based API gateway — round-robins gRPC (HTTP/2) traffic across the
   ingest services and REST traffic to `srv_read`, with JWT auth, per-caller rate limiting and
-  optional TLS. Its destinations are written as `consul://<service>` and resolved from the
-  catalog at runtime.
+  optional TLS. Its destinations are written as `discover://<service>:<port>` and resolved from
+  whichever registry `Discovery:Provider` names.
 - **`srv_ingest`**: gRPC service that receives packets and writes them to the MySQL outbox inside
   a DB transaction.
 - **`srv_pub`**: worker that relays packets from the MySQL outbox to Kafka (`FOR UPDATE SKIP LOCKED` reservation, publish, mark processed, cleanup).
@@ -302,8 +303,8 @@ projection idempotent (see
 - **Shared libraries**: `Shared` (`PacketMessage`, `SnapshotMessage`, `ProtocolType`, serializer,
   API-key hasher), `kafka` (`KafkaMessagePub`, `TopicRepository`, producer `Message`),
   `outbox` (outbox table, `Outbox`/`Relay`, publish + cleanup jobs, MySQL persistence), and
-  `consul` (`IServiceDirectory` with a Consul-backed and a static implementation, plus the
-  hosted service that registers a process and deregisters it on shutdown).
+  `discovery` (`IServiceDirectory` with Consul, DNS and static implementations, plus the hosted
+  service that registers a process with Consul and deregisters it on shutdown).
 - **`PacketShard.Tests`**: one test project covering all of the above, split into a fast in-process
   lane and a Testcontainers-backed lane — see [Tests](#tests).
 
@@ -428,113 +429,66 @@ docker exec packetshard-kafka kafka-consumer-groups \
 
 </details>
 
-## Service discovery (Consul)
+## Service discovery
 
 <details>
-<summary><b>The problem</b> — a gateway that has to be told what exists</summary>
+<summary><b>What it replaced</b> — a gateway that had to be told what exists</summary>
 
-The gateway used to name its backends:
+The gateway used to name its backends: `ingest-1`, `ingest-2`, `ingest-3`. That list is a second
+place the replica count lives, and it drifts — scaling meant editing gateway config and restarting
+it, and a dead instance kept its slot until YARP's own probes noticed. Now instances publish
+themselves and the gateway reads the registry.
+
+Only the *addresses* became dynamic. Routes, load-balancing policy, health-check policy and HTTP
+version stay in `appsettings.json`, where they are readable:
 
 ```json
 "Destinations": {
-  "ingest-1": { "Address": "http://srv_ingest-1:8080" },
-  "ingest-2": { "Address": "http://srv_ingest-2:8080" },
-  "ingest-3": { "Address": "http://srv_ingest-3:8080" }
+  "ingest": { "Address": "discover://srv-ingest:8080" }
 }
 ```
 
-That list is a second place the replica count lives, and it drifts. Scaling to four replicas means
-editing gateway config and restarting it; an instance that dies keeps its slot in the rotation
-until YARP's own probes notice; and an instance that is *up but not ready* — still replaying the
-outbox schema, still connecting to MySQL — is indistinguishable from a healthy one.
+`ServiceDestinationResolver` (YARP's `IDestinationResolver`) expands that into one destination per
+live instance — `ingest[0]`, `ingest[1]`, … — and re-resolves when the set changes. Addresses that
+are not `discover://` pass through untouched, so a cluster can mix discovered and pinned
+destinations. A lookup that *fails* returns the last known instances rather than none: an
+unreachable registry is not evidence the backends went away.
 
-Consul moves the list to where it is actually known: each instance publishes itself, and stops
-being published when it stops passing its own health check.
+Which registry answers is a deployment setting, not an application one:
+
+|`Discovery:Provider`|Backed by|How a change is noticed|Used by|
+|---|---|---|---|
+|`Static` (default)|the `Discovery:Fallback` map|it never changes|no infrastructure at all|
+|`Consul`|the agent's health endpoint|blocking query — a parked connection, not a poll|`docker-compose.yml`|
+|`Dns`|A records, Cloud Map on AWS|a refresh interval; DNS cannot push|[`aws/`](#aws-optional)|
+
+Callers depend on `IServiceDirectory` and never learn which one answered — which is why the AWS
+deployment needs no code change, only `Discovery__Provider=Dns`. The port in the sentinel is there
+for `Dns`: Consul stores each instance's port, but an A record carries an address and nothing else.
 
 </details>
 
 <details>
-<summary><b>Who registers, and how each one is checked</b></summary>
+<summary><b>Who registers</b> — and the one surprise</summary>
 
-|Service       |Registers as |Port |Check                        |Why that check|
-|--------------|-------------|-----|-----------------------------|--------------|
-|`srv_ingest`×3|`srv-ingest` |8080 |HTTP `GET :8081/health`      |The service port is HTTP/2-only, so probes get their own HTTP/1.1 listener — see below|
-|`srv_read`    |`srv-read`   |8080 |HTTP `GET :8080/health`      |Plain HTTP/1.1 service; one port is enough|
-|`MasterNode`  |`masternode` |8000 |TCP connect                  |It speaks a line protocol over raw TCP, not HTTP|
-|`LoadBalancer`|`gateway`    |5001 |HTTP `GET :5002/health`      |The gRPC port is HTTP/2-only; the REST port answers the probe|
+|Service       |Registers as |Port |Check                  |
+|--------------|-------------|-----|-----------------------|
+|`srv_ingest`×3|`srv-ingest` |8080 |HTTP `GET :8081/health`|
+|`srv_read`    |`srv-read`   |8080 |HTTP `GET :8080/health`|
+|`MasterNode`  |`masternode` |8000 |TCP connect — it speaks a line protocol, not HTTP|
+|`LoadBalancer`|`gateway`    |5001 |HTTP `GET :5002/health`|
 
-Registration is deliberately **not** on the startup path. It runs in the background and retries,
-the same reasoning as the outbox schema init: Consul may still be electing a leader when a service
-boots, and being unregistered for a few seconds is a discovery gap, not a reason to hold up the
-process. Each check starts in `critical` and only turns `passing` once it actually succeeds, so a
-slow-booting instance never receives traffic it cannot serve. On a clean shutdown a service
-deregisters itself; on a kill, `DeregisterCriticalServiceAfter` sweeps it up.
+Registration runs in the background and retries rather than blocking startup, and each check starts
+`critical` so a slow-booting instance never receives traffic it cannot serve. A clean shutdown
+deregisters; a kill is swept up by `DeregisterCriticalServiceAfter`.
 
-**Why `srv_ingest` listens twice.** Its service port carries gRPC, which is HTTP/2-only — on a
-plaintext port there is no ALPN to negotiate with, so it cannot also serve HTTP/1.1. Consul's HTTP
-check speaks HTTP/1.1. So the same `/health` endpoint is exposed on a second HTTP/1.1 listener
-(`HealthPort`, 8081): YARP probes it over h2c on 8080, Consul over HTTP/1.1 on 8081.
+**The surprise: `srv_ingest` listens twice.** Its service port carries gRPC, which is HTTP/2-only —
+plaintext has no ALPN to negotiate with — while Consul's HTTP check speaks HTTP/1.1. So the same
+`/health` is exposed on a second HTTP/1.1 listener (`HealthPort`, 8081). The gateway and the agent
+probe the same endpoint on different ports.
 
-</details>
-
-<details>
-<summary><b>How the gateway resolves</b> — <code>consul://</code> destinations</summary>
-
-Only the *addresses* became dynamic. Routes, load-balancing policy, health-check policy and HTTP
-version all stay in `appsettings.json`, where they are readable:
-
-```json
-"ingest-cluster": {
-  "LoadBalancingPolicy": "RoundRobin",
-  "HttpRequest": { "Version": "2", "VersionPolicy": "RequestVersionExact" },
-  "Destinations": {
-    "ingest": { "Address": "consul://srv-ingest" }
-  }
-}
-```
-
-`ConsulDestinationResolver` implements YARP's `IDestinationResolver`. It expands each
-`consul://<service>` into one destination per healthy instance (`ingest[0]`, `ingest[1]`, …) and
-returns a change token wired to a Consul **blocking query** — an idle watch is one parked
-connection, not a poll loop. When the catalog moves past the index the snapshot was read at, the
-token trips and YARP re-resolves. Addresses that are not `consul://` are passed through untouched,
-so a cluster can mix discovered and pinned destinations.
-
-Two details that matter in an outage:
-
-- A lookup that **fails** returns the last known instance set rather than an empty one. An
-  unreachable agent is not evidence that the backends went away, and reporting none would take the
-  cluster down with the agent.
-- A lookup that **succeeds with zero instances** is believed, and the service stays watched, so the
-  cluster recovers by itself when instances come back.
-
-</details>
-
-<details>
-<summary><b>The off switch</b> — the same config works with no agent</summary>
-
-`Consul:Enabled` defaults to `false`, the same convention as the SSL and Auth toggles: the stack
-still boots with no Consul in it. With discovery off, `consul://` destinations resolve from a fixed
-map instead of an agent —
-
-```json
-"Consul": {
-  "Enabled": "false",
-  "Fallback": {
-    "srv-ingest": "http://srv_ingest-1:8080,http://srv_ingest-2:8080,http://srv_ingest-3:8080",
-    "srv-read": "http://srv_read:8080"
-  }
-}
-```
-
-— which is exactly the fixed replica list the gateway used before there was a catalog to ask.
-Callers depend on `IServiceDirectory` and never learn which implementation answered.
-`docker-compose.yml` sets `Consul__Enabled=true`, so the Docker stack runs with discovery on.
-
-`srv_sub` uses the same directory to find the MasterNode: set `MasterNode__Service` and it resolves
-by name, rotating to the next instance on every reconnect so the node that just dropped the
-connection is not the first one tried again. Leave it unset and the configured `MasterNode__Host`
-is dialled exactly as before.
+`srv_sub` resolves the MasterNode the same way when `MasterNode__Service` is set, rotating instances
+on reconnect; leave it unset and the fixed `MasterNode__Host` is dialled as before.
 
 </details>
 
@@ -543,48 +497,78 @@ is dialled exactly as before.
 
 ```bash
 docker compose up -d --build
-open http://localhost:8500                      # catalog UI
+open http://localhost:8500                       # catalog UI
 
-# what is registered, and what is actually passing
-curl -s localhost:8500/v1/catalog/services | jq
 curl -s 'localhost:8500/v1/health/service/srv-ingest?passing=true' \
   | jq -r '.[] | "\(.Service.ID)  \(.Service.Address):\(.Service.Port)"'
 
-# the gateway logs what it resolved, and re-logs it whenever the set changes
-docker compose logs -f loadbalancer | grep -E "instance\(s\) of|changed past index"
+docker compose logs -f loadbalancer | grep "instance(s) of"
 ```
 
-Add a replica and watch it land without touching gateway config or restarting anything — copy the
-`srv_ingest-3` block in `docker-compose.yml`, give it its own `Consul__Service__Address` (that is
-what makes it a separate catalog entry rather than an overwrite of an existing one), then:
-
-```bash
-docker compose up -d srv_ingest-4
-docker compose logs loadbalancer | tail -3       # "ingest -> 4 instance(s) of srv-ingest: ..."
-```
-
-Kill an instance and the reverse happens — the check goes critical, Consul drops it from the
-passing set, the blocking query returns, and the gateway re-resolves to the survivors.
+Add a replica — copy the `srv_ingest-3` block, give it its own `hostname:` (that is what keeps its
+service id distinct) — and the gateway picks it up with no config edit and no restart. Kill one and
+the reverse happens: the check goes critical, Consul drops it, the gateway re-resolves.
 
 </details>
 
 <details>
 <summary><b>Honest caveats</b></summary>
 
-- **One agent, one server.** `-bootstrap-expect=1` is a dev-stack datacenter: it has no quorum, so
-  the agent is a single point of failure for *discovery*. It is not on the data path — a request
-  already in flight never touches Consul, and the last known instance set keeps serving traffic
-  while the agent is down — but a service that starts during an outage cannot register. Production
-  wants 3 or 5 servers.
-- **No ACLs, no TLS, no gossip encryption.** The agent runs open inside the Compose network.
-  `ConsulOptions.Token` exists for the ACL case, but nothing sets it here.
+- **One agent, one server.** `-bootstrap-expect=1` has no quorum, so it is a single point of failure
+  for *discovery* — though not on the data path: in-flight requests never touch Consul and the last
+  known instances keep serving. A service that starts during an outage cannot register. Production
+  wants 3 or 5.
+- **No ACLs, no TLS.** The agent runs open inside the Compose network. `Discovery:Consul:Token`
+  exists for the ACL case; nothing sets it here.
 - **Consul is not a load balancer.** It answers "which instances are healthy"; YARP still decides
-  where each request goes and keeps its own active/passive health checks. The two layers overlap
-  on purpose — Consul catches a *dead process*, YARP catches a destination that is reachable but
-  failing requests.
-- **Registration is per-process, not sidecar-based.** Each service registers itself over the HTTP
-  API. That keeps the Compose file simple and makes the check definition live next to the code it
-  checks, at the cost of a Consul dependency inside the app.
+  where each request goes and keeps its own health checks. The overlap is deliberate — Consul
+  catches a dead process, YARP catches one that is reachable but failing requests.
+
+</details>
+
+## AWS (optional)
+
+<details>
+<summary><b>The deployment</b> — the whole pipeline on ECS Fargate, in <code>aws/</code></summary>
+
+`aws/` holds Terraform for the entire pipeline on ECS Fargate: NLB → YARP → srv_ingest → RDS MySQL
+outbox → Kafka (KRaft on EFS) → srv_sub → MasterNode → 5 Mongo shards → Debezium → srv_read →
+Postgres/pg_ivm, with API Gateway fronting `GET /stats/*` over a VPC Link. Roughly 17 tasks,
+about $8–9 a day, and a clean `terraform destroy`. Full instructions in
+[`aws/README-AWS.md`](aws/README-AWS.md).
+
+It is a **hybrid-demo profile** on purpose: only the outbox uses a managed service (RDS MySQL);
+Kafka, Postgres, Mongo and Redis stay as containers so the project's own images and guarantees —
+pg_ivm, `rs0` change streams, the partition count — are the ones actually deployed. `README-AWS.md`
+lists the managed upgrade path (MSK, Atlas, ElastiCache) and is honest that `terraform validate`
+has not been run against a real provider registry.
+
+</details>
+
+<details>
+<summary><b>Why it needs no application patch</b> — the provider is the only thing that changes</summary>
+
+AWS replaces the three fixed ingest replicas with a Cloud Map service whose multivalue A records
+list every healthy task. That is a different registry, not a different design, so it lands entirely
+in configuration:
+
+```
+docker-compose:  Discovery__Provider=Consul   ->  ConsulServiceDirectory
+aws/ (ECS):      Discovery__Provider=Dns      ->  DnsServiceDirectory
+neither:         Discovery__Provider=Static   ->  StaticServiceDirectory
+```
+
+`discover://srv-ingest:8080` in `appsettings.json` is read the same way in all three. The gateway,
+`ServiceDestinationResolver` and `srv_sub` are byte-identical between a laptop and the VPC.
+
+Two things are genuinely different on AWS, and both are handled by the provider rather than by the
+app: **nothing registers itself** — ECS registers a task with Cloud Map when it starts it, so the
+registration hosted service is not even added — and **watches become polls**, since DNS cannot push
+a change. The port lives in the sentinel because an A record cannot carry one.
+
+Expanding the record into per-task destinations is the part that matters for throughput. Left as a
+single DNS name, `SocketsHttpHandler` picks one address and multiplexes every gRPC stream onto one
+task, so YARP's round-robin never sees the rest.
 
 </details>
 
@@ -760,7 +744,7 @@ Redis, srv_read). Watch the logs: srv_pub publishes, srv_sub forwards, MasterNod
 
 The catalog UI at <http://localhost:8500> shows every service that came up and whether its health
 check is passing — a quick read on what is actually alive (see
-[Service discovery](#service-discovery-consul)).
+[Service discovery](#service-discovery)).
 
 Which MySQL topology comes up depends on `.env` — a single `mysql` node by default, or the
 primary/replica pair behind ProxySQL if the [HA overlay](#high-availability-optional) is enabled.
@@ -799,15 +783,15 @@ dotnet run --project srv_pub
 ## Tests
 
 <details>
-<summary><b>Two lanes</b> — 169 tests split by cost, not by layer</summary>
+<summary><b>Two lanes</b> — 174 tests split by cost, not by layer</summary>
 
 `PacketShard.Tests` covers the pipeline in two lanes. The split is by **cost**, not by layer — the
 unit lane runs anywhere in a few seconds, the infrastructure lane starts real databases via
 Testcontainers:
 
 ```
-dotnet test                                       # 169 tests, ~33s
-dotnet test --filter "Category=Unit"              # 128 tests,  ~5s, no Docker required
+dotnet test                                       # 174 tests, ~33s
+dotnet test --filter "Category=Unit"              # 133 tests,  ~5s, no Docker required
 dotnet test --filter "Category=Infrastructure"    #  41 tests, ~33s, needs Docker
 ```
 
@@ -820,10 +804,10 @@ suite shares a container per class and empties the table between tests instead, 
 boots an order of magnitude slower.
 
 A full run costs about the same as the infrastructure lane alone — xunit runs test classes in
-parallel, so the 128 in-process tests finish while the containers are still coming up.
+parallel, so the 133 in-process tests finish while the containers are still coming up.
 
 Both lanes are tagged explicitly, so `Category=Unit` selects the fast one by name.
-`--filter "Category!=Infrastructure"` picks the same 128 tests today, but it also sweeps up
+`--filter "Category!=Infrastructure"` picks the same 133 tests today, but it also sweeps up
 anything added later without a trait — handy as a CI gate that fails loudly if a new container
 test forgets its tag, and the wrong choice if you want only what is known to be in-process.
 

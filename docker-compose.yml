@@ -197,9 +197,9 @@ services:
       Postgres__ConnStr: "Host=postgres;Port=5432;Database=readmodel;Username=postgres;Password=postgres"
       Redis__ConnStr: "redis:6379"
       Redis__TtlDays: "7"
-      Consul__Enabled: "true"
-      Consul__Address: "http://consul:8500"
-      Consul__Service__UseIpAddress: "true"
+      Discovery__Provider: "Consul"
+      Discovery__Consul__Address: "http://consul:8500"
+      Discovery__Service__UseIpAddress: "true"
 
   # MasterNode: TCP server, filter + route to shards 
   masternode:
@@ -219,9 +219,9 @@ services:
       - "8000:8000"
     environment:
       Tcp__Port: "8000"
-      Consul__Enabled: "true"
-      Consul__Address: "http://consul:8500"
-      Consul__Service__UseIpAddress: "true"
+      Discovery__Provider: "Consul"
+      Discovery__Consul__Address: "http://consul:8500"
+      Discovery__Service__UseIpAddress: "true"
       Shards__Https: "mongodb://mongo-https:27017"
       Shards__Tcp: "mongodb://mongo-tcp:27017"
       Shards__Udp: "mongodb://mongo-udp:27017"
@@ -246,11 +246,11 @@ services:
       ConsumerGroup: "ConsumerGroup"
       MasterNode__Host: "masternode"
       MasterNode__Port: "8000"
-      # With a service name set, the host/port above are only the fallback: srv_sub asks Consul
-      # which shard routers are healthy and rotates across them on every reconnect.
+      # With a service name set, the host/port above become the fallback plus the port hint:
+      # srv_sub asks the registry which shard routers are live and rotates on every reconnect.
       MasterNode__Service: "masternode"
-      Consul__Enabled: "true"
-      Consul__Address: "http://consul:8500"
+      Discovery__Provider: "Consul"
+      Discovery__Consul__Address: "http://consul:8500"
 
   # srv_pub: outbox RELAY — drains the MySQL outbox to Kafka (publish + cleanup jobs).
   srv_pub:
@@ -290,12 +290,12 @@ services:
       GrpcPort: "8080"
       # The gRPC port is HTTP/2-only, so health probes get their own HTTP/1.1 listener.
       HealthPort: "8081"
-      Consul__Enabled: "true"
-      Consul__Address: "http://consul:8500"
+      Discovery__Provider: "Consul"
+      Discovery__Consul__Address: "http://consul:8500"
       # Advertise the container IP, not the hostname: Consul can only serve A records for an
       # address it holds as an IP, and a hostname comes back as a CNAME instead. Each container
       # has its own IP, so this is also what makes the three replicas three catalog entries.
-      Consul__Service__UseIpAddress: "true"
+      Discovery__Service__UseIpAddress: "true"
 
   srv_ingest-2:
     <<: *ingest
@@ -326,12 +326,12 @@ services:
       Listen__Port: "5001"
       Listen__HttpPort: "5002"
       Ssl__Enabled: "false"
-      # appsettings.json points both clusters at "consul://srv-ingest" / "consul://srv-read".
-      # Turning this off falls back to the fixed addresses in Consul:Fallback, which is the
-      # replica list the gateway used before there was a catalog to ask.
-      Consul__Enabled: "true"
-      Consul__Address: "http://consul:8500"
-      Consul__Service__UseIpAddress: "true"
+      # appsettings.json points both clusters at "discover://srv-ingest:8080" and
+      # "discover://srv-read:8080". The provider decides who answers: Consul here, Cloud Map DNS
+      # on ECS (see aws/), and the fixed Discovery:Fallback list when there is neither.
+      Discovery__Provider: "Consul"
+      Discovery__Consul__Address: "http://consul:8500"
+      Discovery__Service__UseIpAddress: "true"
       # Enable TLS: set Ssl__Enabled=true and mount a PFX at /https/server.pfx
       # Ssl__CertPath: "/https/server.pfx"
       # Ssl__CertPassword: "11111"

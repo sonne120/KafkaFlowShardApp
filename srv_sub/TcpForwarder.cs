@@ -30,8 +30,8 @@ public sealed class TcpForwarder : IDisposable
         _port = int.TryParse(configuration["MasterNode:Port"], out var p) ? p : 8000;
         _apiKey = configuration["apiKey"] ?? "valid_api_key_1";
 
-        // Set MasterNode:Service to look the shard router up by name instead of dialling one fixed
-        // host; leave it unset and the configured host:port is used exactly as before.
+        // Set MasterNode:Service to look the shard router up through Discovery instead of dialling
+        // one fixed host; leave it unset and the configured host:port is used exactly as before.
         var serviceName = configuration["MasterNode:Service"];
         _serviceName = string.IsNullOrWhiteSpace(serviceName) ? null : serviceName;
     }
@@ -76,7 +76,9 @@ public sealed class TcpForwarder : IDisposable
         if (_serviceName is null)
             return new ServiceEndpoint(_host, _port, "tcp");
 
-        var lookup = await _directory.ResolveAsync(_serviceName, cancellationToken);
+        // The configured port doubles as the hint a DNS-backed directory needs: an A record
+        // carries an address and nothing else.
+        var lookup = await _directory.ResolveAsync(_serviceName, _port, cancellationToken);
         if (lookup.Endpoints.Count == 0)
         {
             _logger.LogWarning("No healthy instance of {Service}; the batch stays uncommitted and is retried", _serviceName);

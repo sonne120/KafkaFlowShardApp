@@ -129,7 +129,7 @@ public sealed class TcpForwarderTests
 
     private static IServiceDirectory Directory(params (string Service, string Addresses)[] services)
     {
-        var options = new ConsulOptions();
+        var options = new DiscoveryOptions();
         foreach (var (service, addresses) in services)
             options.Fallback[service] = addresses;
 

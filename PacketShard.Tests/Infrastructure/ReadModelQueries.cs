@@ -26,10 +26,6 @@ public sealed record ProtoStatRow(
     DateTimeOffset? FirstSeen,
     DateTimeOffset? LastSeen);
 
-/// <summary>
-/// Read-side helpers. These query the same objects the srv_read endpoints do, so a test asserts
-/// against what the API would actually serve.
-/// </summary>
 public static class ReadModelQueries
 {
     public static async Task<long> CountLedgerAsync(this NpgsqlDataSource db)
@@ -91,7 +87,6 @@ public static class ReadModelQueries
             reader.GetFieldValue<DateTimeOffset>(3));
     }
 
-    /// <summary>Reads the pg_ivm IMMV as-is — no REFRESH, which is the whole point of it.</summary>
     public static async Task<IReadOnlyList<ProtoStatRow>> GetProtoStatsAsync(this NpgsqlDataSource db)
     {
         await using var cmd = db.CreateCommand("""
@@ -113,7 +108,6 @@ public static class ReadModelQueries
         return rows;
     }
 
-    /// <summary>Proves the payload landed as real jsonb rather than an opaque string.</summary>
     public static async Task<string?> GetPayloadFieldAsync(
         this NpgsqlDataSource db, string transactionId, string field)
     {

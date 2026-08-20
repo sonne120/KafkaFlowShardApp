@@ -8,7 +8,7 @@ using Yarp.ReverseProxy.Configuration;
 namespace PacketShard.Tests.Discovery;
 
 [Trait("Category", "Unit")]
-public sealed class ConsulDestinationResolverTests
+public sealed class ServiceDestinationResolverTests
 {
     [Fact]
     public async Task A_plain_address_is_left_exactly_as_configured()
@@ -30,12 +30,11 @@ public sealed class ConsulDestinationResolverTests
         var resolved = await resolver.ResolveDestinationsAsync(
             Destinations(("read-1", "http://srv_read:8080")), default);
 
-        // A change token here would have YARP re-resolving a config that cannot change.
         Assert.Null(resolved.ChangeToken);
     }
 
     [Fact]
-    public async Task A_consul_address_becomes_one_destination_per_instance()
+    public async Task A_discover_address_becomes_one_destination_per_instance()
     {
         var directory = new FakeDirectory
         {
@@ -43,7 +42,7 @@ public sealed class ConsulDestinationResolverTests
         };
 
         var resolved = await Resolver(directory).ResolveDestinationsAsync(
-            Destinations(("ingest", "consul://srv-ingest")), default);
+            Destinations(("ingest", "discover://srv-ingest")), default);
 
         Assert.Equal(new[] { "ingest[0]", "ingest[1]" }, resolved.Destinations.Keys.Order());
         Assert.Equal("http://ingest-a:8080", resolved.Destinations["ingest[0]"].Address);
@@ -59,7 +58,7 @@ public sealed class ConsulDestinationResolverTests
         };
 
         var resolved = await Resolver(directory).ResolveDestinationsAsync(
-            Destinations(("ingest", "consul://srv-ingest")), default);
+            Destinations(("ingest", "discover://srv-ingest")), default);
 
         Assert.Equal("https://ingest-a:8443", resolved.Destinations["ingest[0]"].Address);
     }
@@ -74,7 +73,7 @@ public sealed class ConsulDestinationResolverTests
 
         var template = new DestinationConfig
         {
-            Address = "consul://srv-ingest",
+            Address = "discover://srv-ingest",
             Metadata = new Dictionary<string, string> { ["zone"] = "eu-west" }
         };
 
@@ -91,11 +90,10 @@ public sealed class ConsulDestinationResolverTests
         var directory = new FakeDirectory { ["srv-ingest"] = ServiceLookup.Empty };
 
         var resolved = await Resolver(directory).ResolveDestinationsAsync(
-            Destinations(("ingest", "consul://srv-ingest")), default);
+            Destinations(("ingest", "discover://srv-ingest")), default);
 
         Assert.Empty(resolved.Destinations);
 
-        // Still watched: the cluster has to recover on its own when instances come back.
         Assert.NotNull(resolved.ChangeToken);
     }
 
@@ -105,7 +103,7 @@ public sealed class ConsulDestinationResolverTests
         var directory = new FakeDirectory { ["srv-ingest"] = Lookup(index: 1, "http://ingest-a:8080") };
 
         var resolved = await Resolver(directory).ResolveDestinationsAsync(
-            Destinations(("ingest", "consul://srv-ingest"), ("pinned", "http://legacy-ingest:8080")), default);
+            Destinations(("ingest", "discover://srv-ingest"), ("pinned", "http://legacy-ingest:8080")), default);
 
         Assert.Equal(new[] { "ingest[0]", "pinned" }, resolved.Destinations.Keys.Order());
     }
@@ -116,13 +114,11 @@ public sealed class ConsulDestinationResolverTests
         var directory = new FakeDirectory { ["srv-ingest"] = Lookup(index: 3, "http://ingest-a:8080") };
 
         var resolved = await Resolver(directory).ResolveDestinationsAsync(
-            Destinations(("ingest", "consul://srv-ingest")), default);
+            Destinations(("ingest", "discover://srv-ingest")), default);
 
         Assert.NotNull(resolved.ChangeToken);
         Assert.False(resolved.ChangeToken!.HasChanged);
 
-        // The watch is armed at the index the snapshot was read at, so YARP is only called back
-        // for state it has not already seen.
         Assert.Equal(3UL, await directory.WatchedIndex.Task.WaitAsync(TimeSpan.FromSeconds(5)));
 
         directory.ReportChange();
@@ -132,8 +128,8 @@ public sealed class ConsulDestinationResolverTests
     }
 
     //helpers
-    private static ConsulDestinationResolver Resolver(IServiceDirectory directory) =>
-        new(directory, new TestLifetime(), NullLogger<ConsulDestinationResolver>.Instance);
+    private static ServiceDestinationResolver Resolver(IServiceDirectory directory) =>
+        new(directory, new TestLifetime(), NullLogger<ServiceDestinationResolver>.Instance);
 
     private static Dictionary<string, DestinationConfig> Destinations(params (string Key, string Address)[] destinations) =>
         destinations.ToDictionary(d => d.Key, d => new DestinationConfig { Address = d.Address });
@@ -166,8 +162,13 @@ public sealed class ConsulDestinationResolverTests
 
         public void ReportChange() => _changed.TrySetResult();
 
-        public ValueTask<ServiceLookup> ResolveAsync(string serviceName, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(_lookups.TryGetValue(serviceName, out var lookup) ? lookup : ServiceLookup.Empty);
+        public int? LastPortHint { get; private set; }
+
+        public ValueTask<ServiceLookup> ResolveAsync(string serviceName, int? port, CancellationToken cancellationToken)
+        {
+            LastPortHint = port;
+            return ValueTask.FromResult(_lookups.TryGetValue(serviceName, out var lookup) ? lookup : ServiceLookup.Empty);
+        }
 
         public async Task WaitForChangeAsync(string serviceName, ulong index, CancellationToken cancellationToken)
         {

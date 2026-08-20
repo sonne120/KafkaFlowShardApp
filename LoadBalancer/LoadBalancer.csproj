@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\consul\consul.csproj" />
+    <ProjectReference Include="..\discovery\discovery.csproj" />
   </ItemGroup>
 
 </Project>

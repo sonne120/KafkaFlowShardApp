@@ -2,11 +2,11 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 COPY Shared/Shared.csproj Shared/
-COPY consul/consul.csproj consul/
+COPY discovery/discovery.csproj discovery/
 COPY MasterNode/MasterNode.csproj MasterNode/
 RUN dotnet restore MasterNode/MasterNode.csproj
 COPY Shared/ Shared/
-COPY consul/ consul/
+COPY discovery/ discovery/
 COPY MasterNode/ MasterNode/
 RUN dotnet publish MasterNode/MasterNode.csproj -c Release -o /app
 

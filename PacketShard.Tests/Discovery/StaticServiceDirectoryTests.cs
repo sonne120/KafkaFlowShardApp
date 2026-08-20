@@ -13,7 +13,7 @@ public sealed class StaticServiceDirectoryTests
     {
         var directory = Directory(("srv-ingest", "http://srv_ingest-1:8080,http://srv_ingest-2:8080,http://srv_ingest-3:8080"));
 
-        var lookup = await directory.ResolveAsync("srv-ingest", default);
+        var lookup = await directory.ResolveAsync("srv-ingest", null, default);
 
         Assert.Equal(
             new[] { "http://srv_ingest-1:8080", "http://srv_ingest-2:8080", "http://srv_ingest-3:8080" },
@@ -25,7 +25,7 @@ public sealed class StaticServiceDirectoryTests
     {
         var directory = Directory(("srv-read", "http://srv_read:8080"));
 
-        Assert.Single((await directory.ResolveAsync("SRV-READ", default)).Endpoints);
+        Assert.Single((await directory.ResolveAsync("SRV-READ", null, default)).Endpoints);
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class StaticServiceDirectoryTests
     {
         var directory = Directory(("srv-read", "http://srv_read:8080"));
 
-        Assert.Empty((await directory.ResolveAsync("srv-ingest", default)).Endpoints);
+        Assert.Empty((await directory.ResolveAsync("srv-ingest", null, default)).Endpoints);
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class StaticServiceDirectoryTests
     {
         var directory = Directory(("srv-ingest", "http://good:8080, nonsense , http://also-good:8081"));
 
-        var lookup = await directory.ResolveAsync("srv-ingest", default);
+        var lookup = await directory.ResolveAsync("srv-ingest", null, default);
 
         Assert.Equal(new[] { "http://good:8080", "http://also-good:8081" }, lookup.Endpoints.Select(e => e.ToAddress()));
     }
@@ -60,7 +60,7 @@ public sealed class StaticServiceDirectoryTests
 
     private static IServiceDirectory Directory(params (string Service, string Addresses)[] services)
     {
-        var options = new ConsulOptions();
+        var options = new DiscoveryOptions();
         foreach (var (service, addresses) in services)
             options.Fallback[service] = addresses;
 

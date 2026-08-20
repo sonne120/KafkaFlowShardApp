@@ -26,16 +26,15 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(config.GetSection("ReverseProxy"));
 
 // --- Service discovery -------------------------------------------------------------------
-// Cluster destinations are written as "consul://<service>" rather than as host names. The
-// resolver expands each one into the instances behind it and re-runs whenever that set changes,
-// so scaling srv_ingest is a Compose concern and not a gateway config edit.
+// Cluster destinations are written as "discover://<service>:<port>" rather than as host names.
+// The resolver expands each one into the instances behind it and re-runs whenever that set
+// changes, so scaling srv_ingest is a deployment concern and not a gateway config edit.
 //
-// The same sentinel works with Consul:Enabled off — lookups then come from the Consul:Fallback
-// map instead of an agent, which is the fixed replica list the gateway used before, so the
-// stack still boots with no Consul in it. The gateway also registers itself, which is what
-// makes `consul catalog services` show the whole topology rather than everything but the door.
+// Which registry answers is Discovery:Provider — a Consul agent under Compose, Cloud Map DNS on
+// ECS, or the fixed Discovery:Fallback list with neither, which is the replica list the gateway
+// used before there was anything to ask. One sentinel, three deployments, no config fork.
 builder.Services.AddServiceRegistration(config);
-builder.Services.AddSingleton<IDestinationResolver, ConsulDestinationResolver>();
+builder.Services.AddSingleton<IDestinationResolver, ServiceDestinationResolver>();
 
 // --- Authentication (off by default) -----------------------------------------------------
 // Two ways to validate a bearer token: point Auth:Authority at an OIDC issuer and let the
@@ -170,13 +169,13 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapReverseProxy();
 
-var consulEnabled = config.GetValue("Consul:Enabled", false);
+var provider = config["Discovery:Provider"] ?? "Static";
 
 app.Logger.LogInformation(
-    "API gateway listening on :{GrpcPort} (gRPC, {Scheme}, HTTP/2) and :{HttpPort} (REST, {Scheme}) — auth {Auth}, rate limit {RateLimit}, discovery {Discovery}",
+    "API gateway listening on :{GrpcPort} (gRPC, {Scheme}, HTTP/2) and :{HttpPort} (REST, {Scheme}) — auth {Auth}, rate limit {RateLimit}, discovery via {Discovery}",
     grpcPort, sslEnabled ? "https" : "h2c", httpPort, sslEnabled ? "https" : "http",
     authEnabled ? "on" : "off",
     rateLimitEnabled ? $"{permitLimit}/{windowSeconds}s per caller" : "off",
-    consulEnabled ? $"consul ({config["Consul:Address"]})" : "static (Consul:Fallback)");
+    provider.ToLowerInvariant());
 
 app.Run();
